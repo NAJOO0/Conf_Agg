@@ -92,20 +92,27 @@ python scripts/stage4_evaluate.py
 
 다른 서버에서 이 프로젝트를 실행하려면 다음 가이드를 참조하세요:
 
+### Docker 사용 (권장)
 - **[🚀 빠른 시작 가이드](docs/QUICKSTART.md)** - 빠른 배포 (5분)
 - **[📖 완전한 배포 가이드](docs/DEPLOYMENT_KR.md)** - 상세한 단계별 설명
 - **[📚 영문 배포 가이드](docs/DEPLOYMENT_GUIDE.md)** - Complete deployment guide
 
-### 자동 배포 스크립트 사용
+### Docker 없이 실행 (간단)
+- **[📦 Docker 없는 배포 가이드](docs/DEPLOYMENT_NO_DOCKER.md)** - Python 직접 실행
+
+자동 배포 스크립트 사용:
 
 ```bash
 # 새 서버에서 실행
 git clone <your-repository-url>
 cd Conf_Agg
-bash scripts/quick_deploy.sh
-```
 
-이 스크립트가 Docker 빌드, 컨테이너 시작, uv sync를 자동으로 처리합니다.
+# Docker 사용 (권장)
+bash scripts/quick_deploy.sh
+
+# 또는 Docker 없이 직접 실행
+# 문서: docs/DEPLOYMENT_NO_DOCKER.md 참조
+```
 
 ## 📁 프로젝트 구조
 

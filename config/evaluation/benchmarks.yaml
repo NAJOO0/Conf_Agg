@@ -1,0 +1,25 @@
+# @package evaluation.benchmarks
+datasets:
+  - name: "AIME24"
+    path: "data/benchmarks/aime24.jsonl"
+  - name: "AIME25" 
+    path: "data/benchmarks/aime25.jsonl"
+  - name: "HMMT24"
+    path: "data/benchmarks/hmmt24.jsonl"
+  - name: "HMMT25"
+    path: "data/benchmarks/hmmt25.jsonl"
+
+evaluation:
+  num_candidates: 8
+  temperature: 1.5
+  max_tokens: 16384
+  timeout: 60
+  
+metrics:
+  primary: "pass_at_1"
+  secondary: ["pass_at_k", "confidence_correlation"]
+  
+output:
+  format: "json"
+  save_predictions: true
+

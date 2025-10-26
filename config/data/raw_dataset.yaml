@@ -1,0 +1,39 @@
+# @package data.raw_dataset
+generation:
+  num_responses_per_problem: 16  # 각 문제당 8개 응답
+  temperature: 1.5
+  max_tokens: 32768  # 모델 길이와 동일하게 설정
+  logprobs: 5
+  top_p: 0.95
+  top_k: 20
+  min_p: 0.0
+  
+confidence:
+  group_size: 512  # 토큰 그룹 크기
+  methods:
+    - "mean_group_confidence"
+    - "bottom_10_percent_confidence" 
+    - "tail_confidence"
+
+# Ray Serve 설정
+ray_serve:
+  num_replicas: 4  # 4개의 독립적인 인스턴스
+  gpus_per_replica: 1  # 각 인스턴스당 GPU 1개
+  enable_async: true  # 비동기 처리 활성화
+
+vllm:
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.95  # 메모리 사용률 조정
+  max_model_len: 32768
+  dtype: "bfloat16"
+  trust_remote_code: true
+  max_num_batched_tokens: 65536  # 배치 토큰 수 제한
+  max_num_seqs: 1024  # 동시 시퀀스 수 제한
+  enforce_eager: false  # 메모리 효율성
+  disable_custom_all_reduce: true  # 단일 GPU 최적화
+  
+# 메모리 최적화 설정
+optimization:
+  logprob_dtype: "float16"  # logprob을 float16으로 저장하여 메모리 절약
+  enable_memory_pooling: true  # 메모리 풀링 활성화
+  batch_size_auto_adjust: true  # GPU 메모리에 따라 배치 크기 자동 조정

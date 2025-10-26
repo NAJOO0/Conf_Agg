@@ -1,0 +1,63 @@
+services:
+  conf-agg-llm:
+    build: .
+    container_name: conf-agg-llm
+    runtime: nvidia
+    shm_size: "16g"
+    working_dir: /workspace
+    stdin_open: true    # -i 옵션 (interactive)
+    tty: true          # -t 옵션 (TTY 할당)
+    volumes:
+      - /home/najoo0/Conf_Agg:/workspace
+      - /data1:/data1
+      - /data2:/data2
+      - /root/.cache/huggingface:/root/.cache/huggingface
+      - uv-cache:/tmp/uv-cache  # uv 캐시 볼륨
+    environment:
+      - DEBIAN_FRONTEND=noninteractive
+      - TZ=Asia/Seoul
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - CUDA_VISIBLE_DEVICES=0,1,2,3
+      - PYTHONPATH=/workspace
+      - WANDB_API_KEY=${WANDB_API_KEY}
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+      - VLLM_USE_FLASHINFER=1
+      - UV_CACHE_DIR=/tmp/uv-cache
+      - UV_COMPILE_BYTECODE=1
+      - UV_LINK_MODE=copy
+    command: bash -c "while true; do sleep 30; done"  # 컨테이너 유지 (attach 가능)
+
+  # 개발용 Jupyter 서비스 (uv 기반)
+  # jupyter:
+  #   build: .
+  #   container_name: conf-agg-jupyter
+  #   runtime: nvidia
+  #   shm_size: "16g"
+  #   ports:
+  #     - "8888:8888"
+  #   volumes:
+  #     - ./data:/app/data
+  #     - ./outputs:/app/outputs
+  #     - ./config:/app/config
+  #     - /data1:/data1
+  #     - /data2:/data2
+  #     - /home/najoo0:/workspace
+  #     - /root/.cache/huggingface:/root/.cache/huggingface
+  #     - uv-cache:/tmp/uv-cache  # uv 캐시 볼륨
+  #   environment:
+  #     - DEBIAN_FRONTEND=noninteractive
+  #     - TZ=Asia/Seoul
+  #     - NVIDIA_VISIBLE_DEVICES=all
+  #     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+  #     - CUDA_VISIBLE_DEVICES=0,1,2,3
+  #     - PYTHONPATH=/app
+  #     - VLLM_USE_FLASHINFER=1
+  #     - UV_CACHE_DIR=/tmp/uv-cache
+  #     - UV_COMPILE_BYTECODE=1
+  #     - UV_LINK_MODE=copy
+  #   working_dir: /app
+  #   command: uv-run jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root
+
+volumes:
+  uv-cache:

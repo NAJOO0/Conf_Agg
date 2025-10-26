@@ -1,0 +1,34 @@
+# @package training
+method: "lora"  # lora, full
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.1
+  target_modules: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+grpo:
+  group_size: 8
+  kl_coefficient: 0.001
+  aggregator_temperature: 1.5
+  
+training:
+  epochs: 1
+  batch_size: 1024
+  max_prompt_length: 16384
+  max_response_length: 16384
+  learning_rate: 5e-5
+  warmup_steps: 100
+  save_steps: 500
+  eval_steps: 500
+  logging_steps: 50
+  
+optimizer:
+  type: "adamw"
+  weight_decay: 0.01
+  beta1: 0.9
+  beta2: 0.999
+  eps: 1e-8
+

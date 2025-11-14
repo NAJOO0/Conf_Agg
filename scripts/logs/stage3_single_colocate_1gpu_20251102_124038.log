@@ -1,0 +1,7 @@
+시작 시간: Sun Nov  2 12:40:38 UTC 2025
+GPU IDs: 0
+모드: 단일 프로세스 (DDP 없음)
+vLLM 모드: colocate
+명령어: uv run python scripts/stage3_train.py
+
+/mnt/data1/projects/Conf_Agg/.venv/bin/python3: can't open file '/mnt/data1/projects/Conf_Agg/scripts/scripts/stage3_train.py': [Errno 2] No such file or directory

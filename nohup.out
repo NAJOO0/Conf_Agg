@@ -1,0 +1,3 @@
+usage: merge_and_analyze_0.py [-h] [--data-dir DATA_DIR] [--output OUTPUT]
+                              [--single-file SINGLE_FILE]
+merge_and_analyze_0.py: error: unrecognized arguments: analysis_4000_nothink.log

@@ -12,16 +12,18 @@ data/curated/*
 !data/curated/.gitkeep
 
 # 모델 파일
-outputs/models/*
+outputs/models/
 !outputs/models/.gitkeep
 
 # 로그 파일
-outputs/logs/*
+outputs/logs/
 !outputs/logs/.gitkeep
-
+logs/*
 # 결과 파일
-outputs/results/*
+outputs/results/
 !outputs/results/.gitkeep
+output_s/
+outputs/
 
 # Python
 __pycache__/
@@ -44,6 +46,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+unsloth_compiled_cache/*
 
 # 가상환경
 venv/
@@ -69,3 +72,5 @@ wandb/
 .DS_Store
 Thumbs.db
 
+#flash attention
+flash-attention/

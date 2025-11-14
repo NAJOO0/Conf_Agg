@@ -38,7 +38,7 @@ def main(cfg: DictConfig) -> None:
     os.makedirs(os.path.join(cfg.paths.data_dir, "curated"), exist_ok=True)
     
     # 입력 파일 경로
-    generated_data_path = os.path.join(cfg.paths.data_dir, "generated", "raw_generated.parquet")
+    generated_data_path = os.path.join(cfg.paths.data_dir, "generated", "dataset_train.parquet")
     
     if not os.path.exists(generated_data_path):
         logger.error(f"Stage 1 결과 파일을 찾을 수 없습니다: {generated_data_path}")
@@ -51,15 +51,42 @@ def main(cfg: DictConfig) -> None:
         easy_sample_percentage=cfg.data.curation.easy_sample_percentage,
         num_sets_per_problem=cfg.data.curation.num_sets_per_problem,
         set_size=cfg.data.curation.set_size,
-        timeout=cfg.data.curation.verification.timeout
+        timeout=cfg.data.curation.verification.timeout,
+        confidence_key=getattr(cfg.data.curation, "confidence_key", "tail_confidence"),
+        fill_insufficient_with_sampling=getattr(cfg.data.curation, "fill_insufficient_with_sampling", False),
+        prompt_template=getattr(
+            cfg.data.curation,
+            "prompt_template",
+            (
+                "Given the following problem:\n{problem}\n"
+                "and these solution attempts:\n{solutions}\n"
+                "It is possible that any, all, or none of these solutions are correct or complete. Carefully review the\n"
+                "provided solutions, using them as starting points—correcting mistakes, filling in gaps, and/or combining\n"
+                "useful ideas—to produce a final, comprehensive, and correct solution to the problem."
+            ),
+        ),
     )
     
     output_dir = os.path.join(cfg.paths.data_dir, "curated")
-    train_path, validation_path = curator.curate_data(generated_data_path, output_dir)
+    result_paths = curator.curate_data(
+        generated_data_path, 
+        output_dir,
+        train_split=cfg.data.curation.output.get("train_split", 0.8)
+    )
     
     logger.info("✅ Stage 2 완료")
-    logger.info(f"훈련 데이터: {train_path}")
-    logger.info(f"검증 데이터: {validation_path}")
+    
+    if cfg.data.curation.strategy == "curriculum":
+        logger.info("Curriculum 데이터셋 생성 완료:")
+        for key, path in result_paths.items():
+            logger.info(f"  {key}: {path}")
+    elif cfg.data.curation.strategy == "multitask":
+        logger.info("Multitask 데이터셋 생성 완료:")
+        logger.info(f"  Train: {result_paths['train']}")
+        logger.info(f"  Validation: {result_paths['validation']}")
+    else:
+        logger.info(f"훈련 데이터: {result_paths['train']}")
+        logger.info(f"검증 데이터: {result_paths['validation']}")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import math_verify
 import logging
 from typing import List, Tuple, Optional
 import time
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -59,31 +60,29 @@ class MathVerifier:
             results.append(self.verify_answer(pred, gt))
         return results
     
-    def extract_answer_from_response(self, response: str) -> str:
-        """
-        응답에서 최종 답안을 추출합니다.
+    def extract_final_answer_from_content(self, content: str) -> str:
+        """content에서 최종 답안 추출"""
+        if not content:
+            return ""
         
-        Args:
-            response: 모델 응답
+        content_str = str(content).strip()
         
-        Returns:
-            추출된 답안
-        """
-        # 간단한 패턴 매칭으로 답안 추출
-        lines = response.strip().split('\n')
+        # \boxed{} 찾기
+        boxed_matches = list(re.finditer(r'\\boxed\{', content_str))
+        if boxed_matches:
+            last_start = boxed_matches[-1].end()
+            brace_count = 1
+            end_pos = last_start
+            
+            while end_pos < len(content_str) and brace_count > 0:
+                if content_str[end_pos] == '{' and (end_pos == 0 or content_str[end_pos-1] != '\\'):
+                    brace_count += 1
+                elif content_str[end_pos] == '}' and (end_pos == 0 or content_str[end_pos-1] != '\\'):
+                    brace_count -= 1
+                end_pos += 1
+            
+            if brace_count == 0:
+                return content_str[last_start:end_pos-1].strip()
         
-        # "답:", "정답:", "최종 답:" 등의 패턴 찾기
-        for line in reversed(lines):  # 마지막부터 검색
-            line = line.strip().lower()
-            if any(keyword in line for keyword in ['답:', '정답:', '최종 답:', 'answer:', 'final answer:']):
-                # 콜론 뒤의 내용 추출
-                parts = line.split(':', 1)
-                if len(parts) > 1:
-                    return parts[1].strip()
-        
-        # 패턴을 찾지 못한 경우 마지막 줄 반환
-        if lines:
-            return lines[-1].strip()
-        
-        return response.strip()
+        return ""
 

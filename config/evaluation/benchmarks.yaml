@@ -10,11 +10,45 @@ datasets:
     path: "data/benchmarks/hmmt25.jsonl"
 
 evaluation:
-  num_candidates: 8
-  temperature: 1.5
+  num_candidates: 4
   max_tokens: 16384
+  temperature: 0.6
+  logprobs: 5  # 로그 확률 개수 (신뢰도 계산에 사용)
+  top_p: 0.95
+  top_k: 20
+  min_p: 0.0
   timeout: 60
-  
+  checkpoint_num: 3600  # null이면 checkpoint-final 사용, 숫자 지정 시 checkpoint-{숫자} 사용
+  enable_thinking: true  # enable_thinking=True일 때 <think> 태그 사용, group_size=2048 사용
+  confidence_group_size: 2048  # enable_thinking=True일 때 사용할 group_size
+  aggregation_do_analysis: false
+  aggregation_do_generation: true
+  aggregation_do_evaluation: true
+  filter_max_tokens: 4000
+  aggregation_group_sizes: [4]  # 필요 시 [4, 2, 1] 등으로 재설정 가능
+  aggregation_prompt_variant: "confidence_no_guidance" # "confidence_no_guidance", "confidence_full_guidance", "default"
+  aggregation_confidence:
+    metrics:
+      - key: "mean_group_confidence"
+        label: "Mean"
+      - key: "lowest_group_confidence"
+        label: "Lowest"
+      - key: "bottom_10_percent_confidence"
+        label: "Bottom10%"
+      - key: "tail_confidence"
+        label: "Tail"
+    subsets:
+      - name: "without_confidence"
+        display_name: "No Confidence"
+        include_confidence: false
+        subset_size: 0
+      - name: "single_confidence"
+        display_name: "Single Confidence"
+        subset_size: 1
+      - name: "all_confidence"
+        display_name: "All Confidence"
+        subset_size: 4
+
 metrics:
   primary: "pass_at_1"
   secondary: ["pass_at_k", "confidence_correlation"]

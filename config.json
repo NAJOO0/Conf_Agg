@@ -1,0 +1,166 @@
+{
+  "data": {
+    "raw_dataset": {
+      "generation": {
+        "num_responses_per_problem": 2,
+        "temperature": 0.6,
+        "max_tokens": 32768,
+        "logprobs": 5,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 0.0
+      },
+      "confidence": {
+        "group_size": 512,
+        "methods": [
+          "mean_group_confidence",
+          "bottom_10_percent_confidence",
+          "tail_confidence"
+        ]
+      },
+      "vllm": {
+        "tensor_parallel_size": 1,
+        "gpu_memory_utilization": 0.95,
+        "max_model_len": 32768,
+        "dtype": "auto",
+        "kv_cache_dtype": "fp8",
+        "trust_remote_code": true,
+        "enforce_eager": false,
+        "disable_custom_all_reduce": true,
+        "enable_prefix_caching": true,
+        "max_num_seqs": 40,
+        "max_num_batched_tokens": 16384,
+        "disable_log_stats": false
+      }
+    },
+    "curation": {
+      "strategy": "curriculum",
+      "easy_sample_percentage": 50,
+      "num_sets_per_problem": 16,
+      "set_size": 8,
+      "verification": {
+        "library": "math_verify",
+        "timeout": 30
+      },
+      "output": {
+        "train_split": 0.8,
+        "validation_split": 0.2,
+        "format": "parquet"
+      }
+    }
+  },
+  "training": {
+    "method": "lora",
+    "lora": {
+      "r": 16,
+      "lora_alpha": 32,
+      "lora_dropout": 0.1,
+      "target_modules": [
+        "q_proj",
+        "v_proj",
+        "k_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj"
+      ],
+      "bias": "none",
+      "task_type": "CAUSAL_LM"
+    },
+    "grpo": {
+      "group_size": 8,
+      "kl_coefficient": 0.001,
+      "aggregator_temperature": 1.5
+    },
+    "training": {
+      "epochs": 1,
+      "batch_size": 1024,
+      "max_prompt_length": 16384,
+      "max_response_length": 16384,
+      "learning_rate": 5e-05,
+      "warmup_steps": 100,
+      "save_steps": 500,
+      "eval_steps": 500,
+      "logging_steps": 50
+    },
+    "optimizer": {
+      "type": "adamw",
+      "weight_decay": 0.01,
+      "beta1": 0.9,
+      "beta2": 0.999,
+      "eps": 1e-08
+    }
+  },
+  "evaluation": {
+    "benchmarks": {
+      "datasets": [
+        {
+          "name": "AIME24",
+          "path": "data/benchmarks/aime24.jsonl"
+        },
+        {
+          "name": "AIME25",
+          "path": "data/benchmarks/aime25.jsonl"
+        },
+        {
+          "name": "HMMT24",
+          "path": "data/benchmarks/hmmt24.jsonl"
+        },
+        {
+          "name": "HMMT25",
+          "path": "data/benchmarks/hmmt25.jsonl"
+        }
+      ],
+      "evaluation": {
+        "num_candidates": 8,
+        "temperature": 1.5,
+        "max_tokens": 16384,
+        "timeout": 60
+      },
+      "metrics": {
+        "primary": "pass_at_1",
+        "secondary": [
+          "pass_at_k",
+          "confidence_correlation"
+        ]
+      },
+      "output": {
+        "format": "json",
+        "save_predictions": true
+      }
+    }
+  },
+  "project": {
+    "name": "conf_agg_llm",
+    "version": "1.0.0",
+    "description": "Confidence-Aware Aggregation LLM Framework"
+  },
+  "paths": {
+    "data_dir": "/mnt/data1/datasets/nlp/conf_agg",
+    "output_dir": "/mnt/data1/datasets/nlp/conf_agg/outputs",
+    "model_dir": "/mnt/data1/models/nlp/conf_agg",
+    "log_dir": "/mnt/data1/datasets/nlp/conf_agg/logs",
+    "cache_dir": "/mnt/data1/datasets/nlp/cache",
+    "huggingface_cache": "/mnt/data1/models/nlp/huggingface_cache"
+  },
+  "model": {
+    "base_model": "Qwen/Qwen3-1.7B-FP8",
+    "max_length": 32768,
+    "trust_remote_code": true
+  },
+  "experiment": {
+    "seed": 42,
+    "device": "auto",
+    "mixed_precision": true,
+    "wandb": {
+      "enabled": true,
+      "project": "conf-agg-llm",
+      "tags": [
+        "experiment",
+        "math-reasoning",
+        "gpu-4"
+      ]
+    }
+  }
+}

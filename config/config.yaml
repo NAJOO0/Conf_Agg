@@ -14,12 +14,12 @@ project:
 
 # 경로 설정
 paths:
-  data_dir: "/data2/datasets/nlp/conf_agg"
-  output_dir: "/data2/datasets/nlp/conf_agg/outputs"
-  model_dir: "/data1/models/nlp/conf_agg"
-  log_dir: "/data2/datasets/nlp/conf_agg/logs"
-  cache_dir: "/data2/datasets/nlp/cache"
-  huggingface_cache: "/data1/models/nlp/huggingface_cache"
+  data_dir: "/mnt/data1/datasets/nlp/conf_agg"
+  output_dir: "/mnt/data1/datasets/nlp/conf_agg/outputs"
+  model_dir: "/mnt/data1/models/nlp/conf_agg"
+  log_dir: "/mnt/data1/datasets/nlp/conf_agg/logs"
+  cache_dir: "/mnt/data1/datasets/nlp/cache"
+  huggingface_cache: "/mnt/data1/models/nlp/huggingface_cache"
 
 # 모델 설정
 model:

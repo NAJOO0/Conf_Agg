@@ -1,12 +1,14 @@
 # @package data.raw_dataset
 generation:
-  num_responses_per_problem: 16  # 각 문제당 8개 응답
-  temperature: 1.5
-  max_tokens: 32768  # 모델 길이와 동일하게 설정
-  logprobs: 5
-  top_p: 0.95
+  num_responses_per_problem: 8  # 각 문제당 8개 응답
+  enable_thinking: false
+  temperature: 0.7
+  max_tokens: 10240 # max_model_len과 동일하게 설정
+  logprobs: 5  # 성능 최적화: logprobs 비활성화 (필요시에만 활성화)
+  top_p: 0.8
   top_k: 20
   min_p: 0.0
+  presence_penalty: 0.0  # 0.0으로 완전히 비활성화하여 속도와 VRAM 활용률 개선
   
 confidence:
   group_size: 512  # 토큰 그룹 크기
@@ -15,25 +17,22 @@ confidence:
     - "bottom_10_percent_confidence" 
     - "tail_confidence"
 
-# Ray Serve 설정
-ray_serve:
-  num_replicas: 4  # 4개의 독립적인 인스턴스
-  gpus_per_replica: 1  # 각 인스턴스당 GPU 1개
-  enable_async: true  # 비동기 처리 활성화
-
 vllm:
   tensor_parallel_size: 1
   gpu_memory_utilization: 0.95  # 메모리 사용률 조정
-  max_model_len: 32768
-  dtype: "bfloat16"
+  max_model_len: 12288 # 더 현실적인 길이로 조정 (18k → 12k)
+  dtype: "auto"  # auto는 FP8 모델 사용 시 자동 처리, 일반 모델은 bfloat16
+  kv_cache_dtype: "fp8"  # FP8 활성화 시 KV 캐시도 FP8로 명시적 설정
   trust_remote_code: true
-  max_num_batched_tokens: 65536  # 배치 토큰 수 제한
-  max_num_seqs: 1024  # 동시 시퀀스 수 제한
   enforce_eager: false  # 메모리 효율성
   disable_custom_all_reduce: true  # 단일 GPU 최적화
-  
-# 메모리 최적화 설정
-optimization:
-  logprob_dtype: "float16"  # logprob을 float16으로 저장하여 메모리 절약
-  enable_memory_pooling: true  # 메모리 풀링 활성화
-  batch_size_auto_adjust: true  # GPU 메모리에 따라 배치 크기 자동 조정
+  enable_prefix_caching: true  # 로그 분석: prefix caching이 활성되어 효율적 (동일 프롬프트 8개 응답)
+  max_num_seqs: 110  # 동시 처리 성능 향상
+  max_num_batched_tokens: 32768  # 배치 처리 최적화
+  disable_log_stats: False  # vLLM 0.10.2에서는 지원 안 됨 (0.11.0+ 필요)
+
+# Note: optimization 섹션은 vLLM이 지원하지 않으므로 제거됨
+# 실제 메모리/성능 최적화는 위의 vllm 설정으로 충분히 달성됨:
+# - kv_cache_dtype: fp8 (KV 캐시 FP8 압축)
+# - max_model_len: 적절한 값 설정
+# - logprobs: null (필요시에만 활성화)

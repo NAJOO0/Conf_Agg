@@ -78,29 +78,43 @@ def main_worker(cfg: DictConfig, args: argparse.Namespace) -> None:
     logger.info(f"전체 설정: {OmegaConf.to_yaml(cfg)}")
     
     try:
-        # 1. vLLM 모델 로드 (Ray Serve 대신 직접 로드)
+        # 1. CUDA 컨텍스트 재확인 (프로세스 간 격리 보장)
+        if torch.cuda.is_available():
+            # CUDA_VISIBLE_DEVICES로 인해 0번이 실제 GPU
+            current_device = torch.cuda.current_device()
+            logger.info(f"[Shard {args.shard_id}] CUDA 컨텍스트 확인: device={current_device}, GPU={torch.cuda.get_device_name(current_device)}")
+        
+        # 2. vLLM 모델 로드 (Ray Serve 대신 직접 로드)
         logger.info(f"[Shard {args.shard_id}] vLLM 모델 로드 중: {cfg.model.base_model}")
         vllm_config = cfg.data.raw_dataset.vllm
-        llm = LLM(
-            model=cfg.model.base_model,
-            tensor_parallel_size=1,  # TP=1 (단일 GPU)
-            gpu_memory_utilization=vllm_config.gpu_memory_utilization,
-            max_model_len=vllm_config.max_model_len,
-            dtype=vllm_config.dtype,
-            trust_remote_code=vllm_config.trust_remote_code,
-            max_num_batched_tokens=vllm_config.get("max_num_batched_tokens", 16384),
-            max_num_seqs=vllm_config.get("max_num_seqs", 256),
-            enforce_eager=vllm_config.get("enforce_eager", False),
-            disable_custom_all_reduce=vllm_config.get("disable_custom_all_reduce", True),
-        )
+        # KV 캐시 dtype 설정 (FP8 활성화 시 명시적 설정)
+        kwargs = {
+            "model": cfg.model.base_model,
+            "tensor_parallel_size": 1,  # TP=1 (단일 GPU)
+            "gpu_memory_utilization": vllm_config.gpu_memory_utilization,
+            "max_model_len": vllm_config.max_model_len,
+            "dtype": vllm_config.dtype,
+            "trust_remote_code": vllm_config.trust_remote_code,
+            "max_num_batched_tokens": vllm_config.get("max_num_batched_tokens", 16384),
+            "max_num_seqs": vllm_config.get("max_num_seqs", 256),
+            "enforce_eager": vllm_config.get("enforce_eager", False),
+            "disable_custom_all_reduce": vllm_config.get("disable_custom_all_reduce", True),
+            "disable_log_stats": vllm_config.get("disable_log_stats", False),
+        }
+        
+        # kv_cache_dtype이 설정되어 있으면 추가
+        if "kv_cache_dtype" in vllm_config:
+            kwargs["kv_cache_dtype"] = vllm_config.kv_cache_dtype
+            
+        llm = LLM(**kwargs)
         tokenizer = AutoTokenizer.from_pretrained(
             cfg.model.base_model,
             trust_remote_code=vllm_config.trust_remote_code
         )
         logger.info(f"[Shard {args.shard_id}] vLLM 모델 로드 완료.")
 
-        # 디렉토리 생성
-        output_dir = os.path.join(cfg.paths.data_dir, f"generated")
+        # 디렉토리 생성, 
+        output_dir = os.path.join(cfg.paths.data_dir, "generated")
         output_dir = os.path.join(output_dir, f"sample_{os.environ.get("SAMPLE_LIMIT")}")
         os.makedirs(output_dir, exist_ok=True)
         
@@ -178,54 +192,121 @@ def main_worker(cfg: DictConfig, args: argparse.Namespace) -> None:
             min_p=gen_cfg.min_p,
             max_tokens=gen_cfg.max_tokens,
             logprobs=gen_cfg.logprobs,  # top-k logprob 저장
+            presence_penalty=gen_cfg.presence_penalty,  # 반복 억제
         )
         gen_cfg_logprobs = gen_cfg.logprobs
 
-        # 4. vLLM 일괄 추론 실행 (모든 요청을 한 번에 던지고 vLLM이 자동 배치 처리)
-        logger.info(f"[Shard {args.shard_id}] vLLM 추론 시작... (입력 {len(my_texts)}개 문제, 각 문제당 {gen_cfg.num_responses_per_problem}개 응답)")
-        outputs = llm.generate(my_texts, sampling_params)
-        logger.info(f"[Shard {args.shard_id}] vLLM 추론 완료. 총 {len(outputs)}개 프롬프트 결과 수신.")
-        
-        # 5. 후처리 및 결과 취합 (CPU 작업)
-        all_results = []
-        logger.info(f"[Shard {args.shard_id}] 결과 후처리 시작...")
-        
-        pbar = tqdm(total=len(outputs), desc=f"Shard {args.shard_id} Post-processing", ncols=100)
-        for pi, req_out in enumerate(outputs):
-            base_meta = my_problems[pi]  # 샤드에 할당된 문제 메타데이터
-            
-            for oi, gen in enumerate(req_out.outputs):
-                
-                # 최적화된 logprob 추출
-                topk = simple_extract_topk(gen.logprobs, gen_cfg_logprobs)
-                
-                # 신뢰도 계산
-                confidence_scores = confidence_calculator.calculate_all_confidence_scores(topk)
-                
-                all_results.append({
-                    "problem_id": base_meta["problem_id"],
-                    "problem_text": base_meta["problem_text"],
-                    "ground_truth": base_meta["ground_truth"],
-                    "response_id": f"{base_meta['problem_id']}_resp_{oi}",
-                    "generated_text": gen.text,
-                    "output_token_count": len(gen.token_ids) if hasattr(gen, "token_ids") else 0,
-                    "logprobs": topk,
-                    "worker_gpu": args.gpu_id,  # GPU ID 저장
-                    "worker_replica": f"shard_{args.shard_id}",  # Shard ID 저장
-                    **confidence_scores,
-                })
-            pbar.update(1)
-        pbar.close()
-
-        # 6. 결과 저장 (샤드별 파일)
-        df = pd.DataFrame(all_results)
+        # 4. 출력 파일 경로 설정
         parquet_path = os.path.join(output_dir, f"raw_generated_shard_{args.shard_id}.parquet")
-        df.to_parquet(parquet_path, index=False, compression="zstd")
+        checkpoint_path = os.path.join(output_dir, f"checkpoint_shard_{args.shard_id}.txt")
         
-        logger.info(f"✅ [Shard {args.shard_id}] Stage 1 완료: {len(df)}개 결과 저장")
+        # 4-1. 기존 결과 로드 (resume 기능)
+        processed_problem_ids = set()
+        if os.path.exists(parquet_path):
+            try:
+                existing_df = pd.read_parquet(parquet_path)
+                processed_problem_ids = set(existing_df['problem_id'].unique())
+                logger.info(f"[Shard {args.shard_id}] 기존 결과 로드: {len(processed_problem_ids)}개 문제 이미 처리됨")
+            except Exception as e:
+                logger.warning(f"[Shard {args.shard_id}] 기존 파일 읽기 실패, 처음부터 시작: {e}")
+        
+        # 4-2. 이미 처리된 문제 필터링
+        filtered_problems = []
+        filtered_texts = []
+        filtered_indices = []
+        
+        for i, (problem, text) in enumerate(zip(my_problems, my_texts)):
+            if problem['problem_id'] not in processed_problem_ids:
+                filtered_problems.append(problem)
+                filtered_texts.append(text)
+                filtered_indices.append(i)
+        
+        if len(filtered_problems) == 0:
+            logger.info(f"[Shard {args.shard_id}] 모든 문제가 이미 처리되었습니다. 종료합니다.")
+            return
+        
+        logger.info(f"[Shard {args.shard_id}] 처리할 문제: {len(filtered_problems)}개 (전체 {len(my_problems)}개 중)")
+        
+        # 5. 배치 단위로 처리 및 점진적 저장
+        batch_size = cfg.data.raw_dataset.get("batch_size", 100)  # 기본값: 100개 문제씩
+        total_batches = (len(filtered_problems) + batch_size - 1) // batch_size
+        
+        logger.info(f"[Shard {args.shard_id}] 배치 단위 처리 시작 (배치 크기: {batch_size}, 총 배치: {total_batches})")
+        
+        all_results = []
+        if os.path.exists(parquet_path):
+            try:
+                existing_df = pd.read_parquet(parquet_path)
+                all_results = existing_df.to_dict('records')
+                logger.info(f"[Shard {args.shard_id}] 기존 결과 {len(all_results)}개 로드")
+            except Exception as e:
+                logger.warning(f"[Shard {args.shard_id}] 기존 결과 로드 실패: {e}")
+        
+        for batch_idx in range(total_batches):
+            start_idx = batch_idx * batch_size
+            end_idx = min(start_idx + batch_size, len(filtered_problems))
+            
+            batch_problems = filtered_problems[start_idx:end_idx]
+            batch_texts = filtered_texts[start_idx:end_idx]
+            
+            logger.info(f"[Shard {args.shard_id}] 배치 {batch_idx + 1}/{total_batches} 처리 시작 ({len(batch_texts)}개 문제)")
+            
+            try:
+                # 5-1. vLLM 추론
+                batch_outputs = llm.generate(batch_texts, sampling_params)
+                logger.info(f"[Shard {args.shard_id}] 배치 {batch_idx + 1}/{total_batches} 추론 완료")
+                
+                # 5-2. 후처리
+                batch_results = []
+                for pi, req_out in enumerate(batch_outputs):
+                    base_meta = batch_problems[pi]
+                    
+                    for oi, gen in enumerate(req_out.outputs):
+                        # 최적화된 logprob 추출
+                        topk = simple_extract_topk(gen.logprobs, gen_cfg_logprobs)
+                        
+                        # 신뢰도 계산
+                        confidence_scores = confidence_calculator.calculate_all_confidence_scores(topk)
+                        
+                        batch_results.append({
+                            "problem_id": base_meta["problem_id"],
+                            "problem_text": base_meta["problem_text"],
+                            "ground_truth": base_meta["ground_truth"],
+                            "response_id": f"{base_meta['problem_id']}_resp_{oi}",
+                            "generated_text": gen.text,
+                            "output_token_count": len(gen.token_ids) if hasattr(gen, "token_ids") else 0,
+                            "logprobs": topk,
+                            "worker_gpu": args.gpu_id,
+                            "worker_replica": f"shard_{args.shard_id}",
+                            **confidence_scores,
+                        })
+                
+                # 5-3. 결과 병합 및 즉시 저장
+                all_results.extend(batch_results)
+                df = pd.DataFrame(all_results)
+                df.to_parquet(parquet_path, index=False, compression="zstd")
+                
+                # 체크포인트 저장
+                with open(checkpoint_path, 'w') as f:
+                    f.write(f"batch_{batch_idx + 1}/{total_batches}\n")
+                    f.write(f"processed_{len(all_results)}/{len(my_problems) * gen_cfg.num_responses_per_problem}\n")
+                
+                logger.info(f"✅ [Shard {args.shard_id}] 배치 {batch_idx + 1}/{total_batches} 저장 완료 (총 {len(all_results)}개 결과)")
+                
+            except Exception as e:
+                logger.error(f"[Shard {args.shard_id}] 배치 {batch_idx + 1} 처리 중 오류: {e}", exc_info=True)
+                # 부분 결과라도 저장
+                if all_results:
+                    df = pd.DataFrame(all_results)
+                    df.to_parquet(parquet_path, index=False, compression="zstd")
+                    logger.info(f"[Shard {args.shard_id}] 오류 발생 전까지의 결과 저장 완료: {len(all_results)}개")
+                raise
+        
+        logger.info(f"✅ [Shard {args.shard_id}] Stage 1 완료: {len(all_results)}개 결과 저장")
         logger.info(f"Parquet 저장 위치: {parquet_path}")
         
         # 통계 정보 출력
+        df = pd.DataFrame(all_results)
         logger.info(f"생성된 응답 수: {len(df)}")
         logger.info(f"문제 수: {df['problem_id'].nunique()}")
         logger.info(f"문제당 평균 응답 수: {len(df) / df['problem_id'].nunique():.1f}")
@@ -275,10 +356,19 @@ if __name__ == "__main__":
     parser.add_argument("--total-shards", type=int, default=4, help="Total number of shards")
     args = parser.parse_args()
 
-    # 1. GPU 격리
+    # 1. GPU 격리 (가장 먼저 설정)
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
 
-    # 2. Hydra 수동 초기화
+    # 2. CUDA 컨텍스트 명시적 초기화 및 GPU 설정
+    # CUDA_VISIBLE_DEVICES 설정 후에는 항상 0번이 실제 GPU가 됨
+    if torch.cuda.is_available():
+        # 명시적으로 GPU를 설정하여 프로세스 간 격리 보장
+        # CUDA_VISIBLE_DEVICES로 인해 0번이 실제 GPU가 됨
+        torch.cuda.set_device(0)
+        # GPU 메모리 캐시 정리
+        torch.cuda.empty_cache()
+
+    # 3. Hydra 수동 초기화
     # config_path는 디렉토리이므로 Path 객체로 변환
     config_dir = Path(args.config_path).resolve()
     # hydra.initialize_config_dir은 절대 경로를 사용해야 함
@@ -287,5 +377,5 @@ if __name__ == "__main__":
     
     cfg = hydra.compose(config_name=args.config_name)
 
-    # 3. 메인 워커 함수 실행
+    # 4. 메인 워커 함수 실행
     main_worker(cfg, args)

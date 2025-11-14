@@ -4,27 +4,44 @@ method: "lora"  # lora, full
 lora:
   r: 16
   lora_alpha: 32
-  lora_dropout: 0.1
+  lora_dropout: 0.0
   target_modules: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
   bias: "none"
   task_type: "CAUSAL_LM"
 
 grpo:
-  group_size: 8
-  kl_coefficient: 0.001
-  aggregator_temperature: 1.5
+  group_size: 1
+  kl_coefficient: 0.0
+  aggregator_temperature: 0.7
+  num_generations: 4  # sequence_length=32768 유지하면서 메모리 절약
+  temperature: 0.7  # 생성 시 temperature
   
+  # vLLM 설정 (inference 최적화)
+  use_vllm: true  # true로 설정하면 generation 속도 2-10배 향상
+  vllm_mode: "colocate"  # "colocate" (같은 프로세스) 또는 "server" (별도 서버)
+  vllm_gpu_memory_utilization: 0.5  # vLLM이 사용할 GPU 메모리 비율 (colocate 모드) - illegal memory access 방지를 위해 0.3 -> 0.2로 감소
+  vllm_enable_sleep_mode: true  # true면 training 중 vLLM이 sleep하여 메모리 절약
+  
+  vllm_server_base_url: "http://localhost:8000"
+  vllm_server_host: "localhost"
+  vllm_server_port: 8000
 training:
   epochs: 1
-  batch_size: 1024
-  max_prompt_length: 16384
-  max_response_length: 16384
-  learning_rate: 5e-5
-  warmup_steps: 100
-  save_steps: 500
-  eval_steps: 500
-  logging_steps: 50
-  
+  batch_size: 4  # per_device_train_batch_size (num_generations=2의 배수)
+  gradient_accumulation_steps: 8  # 유효 배치 크기 유지: 2 * 8 = 16 (이전 4*4=16과 동일)
+  max_prompt_length: 16384  # 원하는 길이 유지
+  max_response_length: 16384  # 원하는 길이 유지
+  learning_rate: 5e-6
+  lr_scheduler_type: "cosine"  # Learning rate scheduler 타입
+  warmup_ratio: 0.1  # warmup 비율 (warmup_steps와 둘 중 하나만 사용)
+  # warmup_steps: null  # warmup 스텝 수 (None 대신 null 또는 숫자 사용, 없으면 warmup_ratio 사용)
+  save_steps: 200
+  save_total_limit: 20  # 최대 저장할 체크포인트 수
+  eval_steps: 0
+  logging_steps: 10
+  seed: 42  # 재현성을 위한 시드
+  use_wandb: true  # WandB 사용 여부
+  enable_think: false
 optimizer:
   type: "adamw"
   weight_decay: 0.01

@@ -12,6 +12,7 @@ scipy>=1.11.0
 
 # Configuration & Logging
 hydra-core>=1.3.0
+antlr4-python3-runtime==4.9.3
 wandb>=0.15.0
 tqdm>=4.65.0
 
@@ -31,3 +32,7 @@ jupyter>=1.0.0
 ipykernel>=6.25.0
 matplotlib>=3.7.0
 seaborn>=0.12.0
+aiofiles
+
+# Monitoring Tools
+nvitop>=1.3.0

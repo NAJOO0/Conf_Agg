@@ -1,8 +1,8 @@
 # @package data.curation
-strategy: "curriculum"  # naive, curriculum, multitask
+strategy: "naive"  # naive, curriculum, multitask
 easy_sample_percentage: 50
-num_sets_per_problem: 16
-set_size: 8
+num_sets_per_problem: 8
+set_size: 4
 
 verification:
   library: "math_verify"

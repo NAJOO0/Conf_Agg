@@ -85,9 +85,11 @@ def create_training_dataloader(
         ground_truths = []
         
         for item in batch:
-            prompts.append(item['problem_text'])
-            responses.append(item['responses'])
-            confidence_scores.append(item['confidence_scores'])
+            # 'prompt'가 있으면 우선 사용, 없으면 problem_text
+            prompts.append(item.get('prompt', item.get('problem_text', '')))
+            # 호환 필드: 없으면 빈 리스트/딕셔너리로 대체
+            responses.append(item.get('responses', []))
+            confidence_scores.append(item.get('confidence_scores', {}))
             ground_truths.append(item['ground_truth'])
         
         return {

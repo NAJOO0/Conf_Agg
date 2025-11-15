@@ -624,10 +624,12 @@ def main(cfg: DictConfig) -> None:
     # 출력 디렉토리 설정
     # Baseline 결과는 comprehensive_results/think or no-think 바로 아래에 저장되므로 공통 경로 사용
     baseline_results_dir = os.path.join(cfg.paths.output_dir, "comprehensive_results")
-    baseline_results_dir = os.path.join(baseline_results_dir, "think" if eval_config.get("enable_thinking", False) else "no_think")
+    baseline_results_dir = os.path.join(baseline_results_dir, "Qwen_Qwen3-4B-Instruct-2507_1")
+    # baseline_results_dir = os.path.join(baseline_results_dir, "think" if eval_config.get("enable_thinking", False) else "no_think")
     # Aggregation 결과는 prompt variant별로 분리 저장
     results_dir = os.path.join(cfg.paths.output_dir, "comprehensive_results", prompt_variant_dir)
-    results_dir = os.path.join(results_dir, "think" if eval_config.get("enable_thinking", False) else "no_think")
+    results_dir = os.path.join(results_dir, "Qwen_Qwen3-4B-Instruct-2507_1")
+    # results_dir = os.path.join(results_dir, "think" if eval_config.get("enable_thinking", False) else "no_think")
     logger.info("사용 프롬프트 variant: %s", prompt_variant_key)
     logger.info("baseline_results_dir: %s", baseline_results_dir)
     logger.info("results_dir: %s", results_dir)
@@ -665,7 +667,7 @@ def main(cfg: DictConfig) -> None:
     baseline_llm = LLM(
         model=cfg.model.base_model,
         tensor_parallel_size=1,
-        gpu_memory_utilization=eval_config.get("gpu_memory_utilization", 0.9),
+        gpu_memory_utilization=eval_config.get("gpu_memory_utilization", 0.8),
         max_model_len=eval_config.get("max_model_len", eval_config.max_tokens + 16384),
         dtype="bfloat16",
         trust_remote_code=True,
@@ -833,9 +835,10 @@ def main(cfg: DictConfig) -> None:
                 "aggllm_gpu_memory_utilization",
                 eval_config.get("gpu_memory_utilization", 0.9),
             ),
-            max_model_len=eval_config.get("max_model_len", eval_config.max_tokens + 8192),
+            max_model_len=eval_config.get("max_model_len", eval_config.max_tokens + 16384),
             dtype="bfloat16",
             trust_remote_code=True,
+            kv_cache_dtype="fp8",
         )
         logger.info("AggLLM 모델 로드 완료")
 

@@ -1,33 +1,24 @@
-from unsloth import FastLanguageModel
+try:
+    import flash_attn
+    print(f"flash-attn package: {flash_attn.__version__}")
+except:
+    print("flash-attn not found")
 
-# 캐시 클리어 후 재로드
-import torch
-torch.cuda.empty_cache()
-
-model, tokenizer = FastLanguageModel.from_pretrained(
-    "Qwen/Qwen3-1.7B",
-    max_seq_length=2048,
-    dtype=None,
-    load_in_4bit=True,
-)
-
-# 다시 확인
-attention_class = model.model.layers[0].self_attn.__class__.__name__
-print(f"Attention 타입: {attention_class}")
-
-# Flash Attention 강제 적용 시도
-if "Flash" not in attention_class:
-    print("⚠️ 여전히 일반 Attention 사용 중")
-    print("수동으로 attn_implementation 지정 시도...")
+# 2. vLLM이 사용하는 FA 확인
+try:
+    from vllm.attention.backends.flash_attn import FlashAttentionBackend
+    print("vLLM uses FlashAttentionBackend")
     
-    # 명시적 지정
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        "Qwen/Qwen3-1.7B",
-        max_seq_length=2048,
-        dtype=None,
-        load_in_4bit=True,
-        attn_implementation="flash_attention_2",
-    )
-    
-    attention_class = model.model.layers[0].self_attn.__class__.__name__
-    print(f"재시도 후 Attention 타입: {attention_class}")
+    # FA2 사용 여부
+    import inspect
+    source = inspect.getsourcefile(FlashAttentionBackend)
+    print(f"Backend location: {source}")
+except ImportError as e:
+    print(f"FlashAttention backend: {e}")
+
+# 3. 실제 사용 중인 attention 함수
+try:
+    from vllm.attention.backends.flash_attn import flash_attn_varlen_func
+    print("✓ Using flash_attn_varlen_func (Flash Attention 2)")
+except:
+    print("Using different attention")

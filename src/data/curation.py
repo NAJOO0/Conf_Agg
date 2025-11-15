@@ -217,7 +217,7 @@ class DataCurator:
                     [{"role": "user", "content": prompt}],
                     tokenize=False,
                     add_generation_prompt=True,
-                    enable_thinking=False,
+                    enable_thinking=True,
                 )
                 # 세트 정보 생성(호환 필드 유지)
                 set_info = {
@@ -230,7 +230,7 @@ class DataCurator:
                     'selected_confidence_key': self.confidence_key,
                     'selected_confidence': selected_conf_values,
                     # enable_thinking: Stage 3에서 chat template 적용 시 사용
-                    'enable_thinking': False,
+                    'enable_thinking': True,
                     # 기존 파이프라인 호환을 위해 유지
                     'responses': [r.get('generated_text', '') for r in response_set],
                     'confidence_scores': {

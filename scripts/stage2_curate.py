@@ -38,7 +38,7 @@ def main(cfg: DictConfig) -> None:
     os.makedirs(os.path.join(cfg.paths.data_dir, "curated"), exist_ok=True)
     
     # 입력 파일 경로
-    generated_data_path = os.path.join(cfg.paths.data_dir, "generated", "dataset_train.parquet")
+    generated_data_path = os.path.join(cfg.paths.data_dir, "generated", "dataset_train_4000.parquet")
     
     if not os.path.exists(generated_data_path):
         logger.error(f"Stage 1 결과 파일을 찾을 수 없습니다: {generated_data_path}")
@@ -71,7 +71,7 @@ def main(cfg: DictConfig) -> None:
     result_paths = curator.curate_data(
         generated_data_path, 
         output_dir,
-        train_split=cfg.data.curation.output.get("train_split", 0.8)
+        train_split=cfg.data.curation.output.get("train_split", 0.95)
     )
     
     logger.info("✅ Stage 2 완료")

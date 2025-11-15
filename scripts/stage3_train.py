@@ -13,7 +13,7 @@ import torch
 from typing import Optional
 
 import torch.distributed as dist
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 # Unsloth imports
 from unsloth import FastLanguageModel, is_bfloat16_supported
@@ -35,6 +35,8 @@ from src.evaluation.math_verifier import MathVerifier
 logger = logging.getLogger(__name__)
 
 os.environ["UNSLOTH_VLLM_STANDBY"] = "1"
+os.environ['UNSLOTH_DISABLE_FAST_LORA'] = '1'
+
 def create_math_reward_function(math_verifier: MathVerifier):
     """
     math_verify를 사용하는 reward function을 생성합니다.
@@ -134,9 +136,9 @@ class OptimizedGRPOTrainer:
             load_in_4bit=True,
             load_in_8bit=False,
             fast_inference=use_vllm, 
-            gpu_memory_utilization=0.4,
             unsloth_vllm_stanby=True,
             float8_kv_cache=use_vllm,
+            # gpu_memory_utilization=0.4,
         )
         
         logger.info("✅ 모델 로드 완료 (DDP 호환 모드)")
@@ -252,14 +254,14 @@ class OptimizedGRPOTrainer:
         num_generations = self.grpo_config.get("num_generations", 8)
         batch_size = self.training_config.get("batch_size", 8)
         
-        if batch_size % num_generations != 0:
-            adjusted_batch_size = (batch_size // num_generations) * num_generations
-            if adjusted_batch_size == 0:
-                adjusted_batch_size = num_generations
-            logger.warning(
-                f"⚠️ batch_size 조정: {batch_size} -> {adjusted_batch_size}"
-            )
-            batch_size = adjusted_batch_size
+        # if batch_size % num_generations != 0:
+        #     adjusted_batch_size = (batch_size // num_generations) * num_generations
+        #     if adjusted_batch_size == 0:
+        #         adjusted_batch_size = num_generations
+        #     logger.warning(
+        #         f"⚠️ batch_size 조정: {batch_size} -> {adjusted_batch_size}"
+        #     )
+        #     batch_size = adjusted_batch_size
         
         # ===== GRPO Config 설정 =====
         # warmup_steps 처리: Hydra에서 문자열로 올 수 있으므로 변환
@@ -291,7 +293,7 @@ class OptimizedGRPOTrainer:
             learning_rate=self.training_config.get("learning_rate", 5e-6),
             lr_scheduler_type=self.training_config.get("lr_scheduler_type", "cosine"),
             **({"warmup_steps": warmup_steps} if warmup_steps is not None else {"warmup_ratio": warmup_ratio}),
-            
+
             # GRPO 설정
             num_generations=num_generations,
             max_prompt_length=self.training_config.get("max_prompt_length", 512),
@@ -300,9 +302,9 @@ class OptimizedGRPOTrainer:
             beta=self.grpo_config.get("beta", 0.01),  # 0이 아닌 작은 값
             
             # 최적화
-            optim="adamw_8bit",
+            optim="paged_adamw_8bit",
             gradient_checkpointing=True,
-            
+            bf16=is_bfloat16_supported(),
             # DDP 설정
             
             # ===== 🎯 vLLM 설정 (수정됨) =====
@@ -310,9 +312,6 @@ class OptimizedGRPOTrainer:
             vllm_mode=vllm_mode,  # ✅ separate 또는 None
             vllm_gpu_memory_utilization=self.grpo_config.get("vllm_gpu_memory_utilization", 0.85),  # ✅ 높임
             vllm_enable_sleep_mode=self.grpo_config.get("vllm_enable_sleep_mode", True),
-            vllm_server_base_url=self.grpo_config.get("vllm_server_base_url", None),
-            vllm_server_host=self.grpo_config.get("vllm_server_host", "localhost"),
-            vllm_server_port=self.grpo_config.get("vllm_server_port", 8000),
             # 로깅 및 저장
             logging_steps=self.training_config.get("logging_steps", 10),
             save_steps=self.training_config.get("save_steps", 500),
@@ -445,7 +444,7 @@ def main(cfg: DictConfig) -> None:
     # 디렉토리 생성
     os.makedirs(cfg.paths.model_dir, exist_ok=True)
     # enavle_think 및 훈련 날짜 폴더데 model 저장
-    enable_think = cfg.training.enable_think
+    enable_think = cfg.training.training.enable_think
     train_date = datetime.now().strftime("%Y%m%d")
     model_dir = os.path.join(cfg.paths.model_dir, f"enable_think_{enable_think}_{train_date}")
     os.makedirs(model_dir, exist_ok=True)

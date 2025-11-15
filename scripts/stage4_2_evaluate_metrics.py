@@ -26,11 +26,15 @@ def calculate_pass_at_k(solutions: list, ground_truth: str, k_values: list, math
     Pass@k 메트릭 계산
     
     Pass@k의 표준 정의: k개의 solution 중 하나라도 정답이면 1.0, 아니면 0.0
-    - Pass@1~16: 각 k에 대해 처음 k개 solution 중 하나라도 정답인지 확인
+    - 각 k에 대해 처음 k개 solution 중 하나라도 정답인지 확인
     """
     results = {}
+    total_solutions = len(solutions)
     
     for k in k_values:
+        # k가 실제 solution 개수보다 크면 건너뜀
+        if k > total_solutions:
+            continue
         # 표준 Pass@k 정의: k개 중 하나라도 정답이면 통과
         is_correct = False
         for sol in solutions[:k]:
@@ -122,6 +126,48 @@ def confidence_weighted_voting(
     }
 
 
+def get_adaptive_k_values(num_solutions: int) -> list:
+    """
+    Solution 개수에 맞게 k 값들을 동적으로 생성
+    2, 4, 8, 16, 32 중에서 실제 solution 개수에 맞게 선택
+    """
+    # 기본 k 값 후보: 1, 2, 4, 8, 16, 32
+    candidate_k_values = [1, 2, 4, 8, 16, 32]
+    
+    # 실제 solution 개수에 맞게 필터링
+    k_values = [k for k in candidate_k_values if k <= num_solutions]
+    
+    # 중간 값들도 추가 (2~16 사이의 모든 값)
+    if num_solutions >= 2:
+        k_values.extend([k for k in range(2, min(17, num_solutions + 1)) if k not in k_values])
+    
+    # 정렬 및 중복 제거
+    k_values = sorted(list(set(k_values)))
+    
+    return k_values
+
+
+def get_adaptive_samples_per_set(num_solutions: int) -> list:
+    """
+    Solution 개수에 맞게 samples_per_set 값들을 동적으로 생성
+    2, 4, 8, 16, 32 중에서 실제 solution 개수에 맞게 선택
+    """
+    # 기본 후보: 2, 4, 8, 16, 32
+    candidate_values = [2, 4, 8, 16, 32]
+    
+    # 실제 solution 개수에 맞게 필터링
+    samples_per_set = [v for v in candidate_values if v <= num_solutions]
+    
+    # 중간 값들도 추가 (2~16 사이의 모든 값)
+    if num_solutions >= 2:
+        samples_per_set.extend([v for v in range(2, min(17, num_solutions + 1)) if v not in samples_per_set])
+    
+    # 정렬 및 중복 제거
+    samples_per_set = sorted(list(set(samples_per_set)))
+    
+    return samples_per_set
+
+
 def evaluate_solutions(
     solutions: list,
     ground_truth: str,
@@ -129,19 +175,22 @@ def evaluate_solutions(
 ) -> dict:
     """Solution 리스트에 대해 모든 메트릭 계산"""
     results = {}
+    num_solutions = len(solutions)
     
-    # Pass@k 계산
-    pass_at_k = calculate_pass_at_k(solutions, ground_truth, [1] + list(range(2, 16)) + [16], math_verifier)
+    # Pass@k 계산 - 동적으로 k 값 생성
+    k_values = get_adaptive_k_values(num_solutions)
+    pass_at_k = calculate_pass_at_k(solutions, ground_truth, k_values, math_verifier)
     results["pass_at_k"] = pass_at_k
     
-    # Majority Voting
+    # Majority Voting - 동적으로 samples_per_set 생성
     majority_results = {}
-    for samples_per_set in list(range(2, 17)):
+    samples_per_set_list = get_adaptive_samples_per_set(num_solutions)
+    for samples_per_set in samples_per_set_list:
         voting_result = majority_voting(solutions, samples_per_set, math_verifier, ground_truth)
         majority_results[f"{samples_per_set}_samples"] = voting_result
     results["majority_voting"] = majority_results
     
-    # Confidence Weighted Voting
+    # Confidence Weighted Voting - 동적으로 samples_per_set 생성
     confidence_metrics = [
         "bottom_10_percent_confidence",
         "tail_confidence",
@@ -152,7 +201,7 @@ def evaluate_solutions(
     confidence_results = {}
     for metric in confidence_metrics:
         metric_results = {}
-        for samples_per_set in list(range(2, 17)):
+        for samples_per_set in samples_per_set_list:
             voting_result = confidence_weighted_voting(
                 solutions,
                 samples_per_set,
@@ -185,9 +234,10 @@ def main(cfg: DictConfig) -> None:
     
     # 디렉토리 설정
     results_dir = os.path.join(cfg.paths.output_dir, "comprehensive_results")
+    results_dir = os.path.join(results_dir, "Qwen_Qwen3-4B-Instruct-2507")
     
     # results_dir = os.path.join(results_dir, "think" if cfg.evaluation.benchmarks.evaluation.get("enable_thinking", False) else "no_think")
-    results_dir = os.path.join(results_dir, "think") 
+    # results_dir = os.path.join(results_dir, "think") 
     
     # Math Verifier 초기화
     math_verifier = MathVerifier(
@@ -317,11 +367,15 @@ def main(cfg: DictConfig) -> None:
         logger.info(f"\n{dataset_name}:")
         if "baseline" in results:
             logger.info("  Baseline:")
-            for k in [1] + list(range(2, 17)):
+            # 동적으로 k 값 추출 (실제 계산된 값들만)
+            baseline_k_values = sorted([int(k.replace('pass_at_', '')) for k in results['baseline'].keys() if k.startswith('pass_at_')])
+            for k in baseline_k_values:
                 logger.info(f"    Pass@{k}: {results['baseline'].get(f'pass_at_{k}', 0.0):.3f}")
         if "aggllm" in results:
             logger.info("  AggLLM:")
-            for k in [1] + list(range(2, 17)):
+            # 동적으로 k 값 추출 (실제 계산된 값들만)
+            aggllm_k_values = sorted([int(k.replace('pass_at_', '')) for k in results['aggllm'].keys() if k.startswith('pass_at_')])
+            for k in aggllm_k_values:
                 logger.info(f"    Pass@{k}: {results['aggllm'].get(f'pass_at_{k}', 0.0):.3f}")
     
     logger.info("\n✅ Stage 4-2: 메트릭 평가 완료")

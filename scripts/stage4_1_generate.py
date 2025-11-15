@@ -425,6 +425,7 @@ def main(cfg: DictConfig) -> None:
     # 디렉토리 생성
     os.makedirs(cfg.paths.output_dir, exist_ok=True)
     results_dir = os.path.join(cfg.paths.output_dir, "comprehensive_results")
+    results_dir = os.path.join(results_dir, cfg.model.base_model.replace('/', '_'))
     os.makedirs(results_dir, exist_ok=True)
     
     # 모델 경로 확인
@@ -489,12 +490,12 @@ def main(cfg: DictConfig) -> None:
                 model_name=cfg.model.base_model,
                 problems=problems,
                 output_path=baseline_output_path,
-                num_solutions=16,
+                num_solutions=32,
                 base_instruction=base_instruction,
                 enable_thinking=enable_thinking,
                 temperature=eval_config.temperature,
                 max_tokens=eval_config.max_tokens,
-                top_p=eval_config.get("top_p", 0.8),
+                top_p=eval_config.get("top_p", 0.95),
                 top_k=eval_config.get("top_k", 20),
                 min_p=eval_config.get("min_p", 0.0),
                 logprobs=eval_config.get("logprobs", 5),

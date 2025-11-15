@@ -22,7 +22,7 @@ export UV_CACHE_DIR=/mnt/data1/.uv-cache
 # - 0: 전체 데이터셋 사용
 # - 100: 처음 100개 문제만 처리 (테스트용)
 # - 1000: 처음 1000개 문제만 처리
-export SAMPLE_LIMIT=0
+export SAMPLE_LIMIT=4000
 
 # 백프레셔 제어 (기본: config의 max_num_seqs * 1.5)
 # - vLLM 엔진에 동시 등록 가능한 최대 요청 수
@@ -72,7 +72,7 @@ mkdir -p "$LOG_DIR"
 
 CONFIG_PATH="./config" 
 CONFIG_NAME="config"
-TOTAL_SHARDS=2  # GPU 2개 사용
+TOTAL_SHARDS=1  # GPU 2개 사용
 
 # =============================================================================
 # 시작 로그
@@ -121,24 +121,6 @@ echo "" | tee -a "$LOG_DIR/stage1_background.log"
 
 # GPU 0 (Shard 0)
 echo "[GPU 0] Shard 0 시작..." | tee -a "$LOG_DIR/stage1_background.log"
-CUDA_VISIBLE_DEVICES=0 \
-VLLM_WORKER_MULTIPROC_METHOD=spawn \
-TORCH_COMPILE_DIR="$TORCH_COMPILE_GPU0" \
-nohup uv run python scripts/stage1_generate_async.py \
-    --config-path $CONFIG_PATH \
-    --config-name $CONFIG_NAME \
-    --gpu-id "0" \
-    --shard-id 0 \
-    --total-shards $TOTAL_SHARDS \
-> "$LOG_DIR/stage1_shard_0.log" 2>&1 &
-PID_0=$!
-echo $PID_0 > "$LOG_DIR/stage1_shard_0_pid.txt"
-echo "  PID: $PID_0" | tee -a "$LOG_DIR/stage1_background.log"
-
-sleep 5
-
-# GPU 1 (Shard 1)
-echo "[GPU 1] Shard 1 시작..." | tee -a "$LOG_DIR/stage1_background.log"
 CUDA_VISIBLE_DEVICES=1 \
 VLLM_WORKER_MULTIPROC_METHOD=spawn \
 TORCH_COMPILE_DIR="$TORCH_COMPILE_GPU1" \
@@ -146,14 +128,32 @@ nohup uv run python scripts/stage1_generate_async.py \
     --config-path $CONFIG_PATH \
     --config-name $CONFIG_NAME \
     --gpu-id "1" \
-    --shard-id 1 \
+    --shard-id 0 \
     --total-shards $TOTAL_SHARDS \
-> "$LOG_DIR/stage1_shard_1.log" 2>&1 &
-PID_1=$!
-echo $PID_1 > "$LOG_DIR/stage1_shard_1_pid.txt"
-echo "  PID: $PID_1" | tee -a "$LOG_DIR/stage1_background.log"
+> "$LOG_DIR/stage1_shard_0.log" 2>&1 &
+PID_0=$!
+echo $PID_0 > "$LOG_DIR/stage1_shard_0_pid.txt"
+echo "  PID: $PID_0" | tee -a "$LOG_DIR/stage1_background.log"
 
-echo "" | tee -a "$LOG_DIR/stage1_background.log"
+# sleep 5
+
+# # GPU 1 (Shard 1)
+# echo "[GPU 1] Shard 1 시작..." | tee -a "$LOG_DIR/stage1_background.log"
+# CUDA_VISIBLE_DEVICES=1 \
+# VLLM_WORKER_MULTIPROC_METHOD=spawn \
+# TORCH_COMPILE_DIR="$TORCH_COMPILE_GPU1" \
+# nohup uv run python scripts/stage1_generate_async.py \
+#     --config-path $CONFIG_PATH \
+#     --config-name $CONFIG_NAME \
+#     --gpu-id "1" \
+#     --shard-id 1 \
+#     --total-shards $TOTAL_SHARDS \
+# > "$LOG_DIR/stage1_shard_1.log" 2>&1 &
+# PID_1=$!
+# echo $PID_1 > "$LOG_DIR/stage1_shard_1_pid.txt"
+# echo "  PID: $PID_1" | tee -a "$LOG_DIR/stage1_background.log"
+
+# echo "" | tee -a "$LOG_DIR/stage1_background.log"
 
 # =============================================================================
 # 실행 완료 안내

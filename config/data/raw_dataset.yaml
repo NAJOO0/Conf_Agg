@@ -1,6 +1,6 @@
 # @package data.raw_dataset
 generation:
-  num_responses_per_problem: 8  # 각 문제당 8개 응답
+  num_responses_per_problem: 5  # 각 문제당 8개 응답
   enable_thinking: false
   temperature: 0.7
   max_tokens: 10240 # max_model_len과 동일하게 설정
@@ -27,7 +27,7 @@ vllm:
   enforce_eager: false  # 메모리 효율성
   disable_custom_all_reduce: true  # 단일 GPU 최적화
   enable_prefix_caching: true  # 로그 분석: prefix caching이 활성되어 효율적 (동일 프롬프트 8개 응답)
-  max_num_seqs: 110  # 동시 처리 성능 향상
+  max_num_seqs: 100  # 동시 처리 성능 향상
   max_num_batched_tokens: 32768  # 배치 처리 최적화
   disable_log_stats: False  # vLLM 0.10.2에서는 지원 안 됨 (0.11.0+ 필요)
 

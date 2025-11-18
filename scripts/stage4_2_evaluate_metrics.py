@@ -25,8 +25,8 @@ def calculate_pass_at_k(solutions: list, ground_truth: str, k_values: list, math
     """
     Pass@k 메트릭 계산
     
-    Pass@k의 표준 정의: k개의 solution 중 하나라도 정답이면 1.0, 아니면 0.0
-    - 각 k에 대해 처음 k개 solution 중 하나라도 정답인지 확인
+    Pass@k 정의: solution을 k개씩 묶어서 set을 만들고, 각 set에 정답이 있는 비율 계산
+    - 예: Pass@4이고 num_solutions가 32이면, 8개의 set을 만들어서 각 set에 정답이 있는 비율 측정
     """
     results = {}
     total_solutions = len(solutions)
@@ -35,13 +35,32 @@ def calculate_pass_at_k(solutions: list, ground_truth: str, k_values: list, math
         # k가 실제 solution 개수보다 크면 건너뜀
         if k > total_solutions:
             continue
-        # 표준 Pass@k 정의: k개 중 하나라도 정답이면 통과
-        is_correct = False
-        for sol in solutions[:k]:
-            if math_verifier.verify_answer(sol["final_answer"], ground_truth):
-                is_correct = True
-                break
-        results[k] = 1.0 if is_correct else 0.0
+        
+        # k개씩 묶어서 set 생성
+        num_sets = total_solutions // k
+        if num_sets == 0:
+            continue
+        
+        correct_count = 0
+        
+        for i in range(num_sets):
+            start_idx = i * k
+            end_idx = start_idx + k
+            set_solutions = solutions[start_idx:end_idx]
+            
+            # 각 set에 대해 정답이 있는지 확인
+            has_correct = False
+            for sol in set_solutions:
+                if sol.get("final_answer") and math_verifier.verify_answer(sol["final_answer"], ground_truth):
+                    has_correct = True
+                    break
+            
+            if has_correct:
+                correct_count += 1
+        
+        # 정답이 있는 set의 비율
+        accuracy = correct_count / num_sets if num_sets > 0 else 0.0
+        results[k] = accuracy
     
     return results
 
@@ -234,7 +253,8 @@ def main(cfg: DictConfig) -> None:
     
     # 디렉토리 설정
     results_dir = os.path.join(cfg.paths.output_dir, "comprehensive_results")
-    results_dir = os.path.join(results_dir, "Qwen_Qwen3-4B-Instruct-2507")
+    # results_dir = os.path.join(results_dir, "Qwen_Qwen3-1.7B_think_True")
+    results_dir = os.path.join(results_dir, "think_prev_3600")
     
     # results_dir = os.path.join(results_dir, "think" if cfg.evaluation.benchmarks.evaluation.get("enable_thinking", False) else "no_think")
     # results_dir = os.path.join(results_dir, "think") 

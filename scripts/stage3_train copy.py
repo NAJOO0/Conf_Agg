@@ -34,11 +34,11 @@ from src.evaluation.math_verifier import MathVerifier
 
 logger = logging.getLogger(__name__)
 
-os.environ["UNSLOTH_VLLM_STANDBY"] = "1"
+# os.environ["UNSLOTH_VLLM_STANDBY"] = "1"
 # os.environ['UNSLOTH_DISABLE_FAST_LORA'] = '1'
-# os.environ['UNSLOTH_DISABLE_FAST_ROPE'] = '1' 
-# PyTorch 메모리 파편화 방지 (OOM 에러 해결)
 
+# PyTorch 메모리 파편화 방지 (OOM 에러 해결)
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 class VLLMMemoryMonitor(TrainerCallback):
     """vLLM standby 메모리 추적"""
@@ -65,13 +65,13 @@ class VLLMMemoryMonitor(TrainerCallback):
         )
     
     def on_step_begin(self, args, state, control, **kwargs):
-        self.log_memory("ON_STEP_BEGIN")
+        self.log_memory("FIRST_STEP_BEGIN")
         
     def on_prediction_step(self, args, state, control, **kwargs):
-        self.log_memory("ON_PREDICTION_STEP")
+        self.log_memory("AFTER_GENERATION")
     
     def on_step_end(self, args, state, control, **kwargs):
-        self.log_memory("ON_STEP_END")
+        self.log_memory("AFTER_TRAINING")
 
 class AggressiveVLLMCleanup(TrainerCallback):
     """vLLM sleep 후 강제 메모리 해제"""
@@ -155,20 +155,8 @@ class AggressiveVLLMCleanup(TrainerCallback):
     
     def on_step_end(self, args, state, control, **kwargs):
         # Training 후에도 메모리 정리
-        logger.info(f"🧹 Step {self.step_count}: vLLM cleanup 시작")
-        reserved_before = torch.cuda.memory_reserved(0) / 1e9
-        allocated_before = torch.cuda.memory_allocated(0) / 1e9
-        total = torch.cuda.get_device_properties(0).total_memory / 1e9
-        free_before = total - reserved_before
-        logger.info(f"  Before: Reserved={reserved_before:.2f}GB, Allocated={allocated_before:.2f}GB, Free={free_before:.2f}GB")
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
-        reserved_after = torch.cuda.memory_reserved(0) / 1e9
-        allocated_after = torch.cuda.memory_allocated(0) / 1e9
-        free_after = total - reserved_after
-        logger.info(f"  After: Reserved={reserved_after:.2f}GB, Allocated={allocated_after:.2f}GB, Free={free_after:.2f}GB")
-        freed = reserved_before - reserved_after
-        logger.info(f"  Freed: {freed:+.2f}GB")
 
 def create_math_reward_function(math_verifier: MathVerifier):
     """
@@ -251,50 +239,30 @@ class OptimizedGRPOTrainer:
             gpu_memory = torch.cuda.get_device_properties(i).total_memory / (1024**3)
             logger.info(f"   GPU {i}: {gpu_name} ({gpu_memory:.1f}GB)")
         
-        # DDP 환경 감지
-        rank = int(os.environ.get("RANK", -1))
-        local_rank = int(os.environ.get("LOCAL_RANK", -1))
-        world_size = int(os.environ.get("WORLD_SIZE", 1))
-        is_distributed = rank >= 0
-        
         # ===== 수정: vLLM 사용 여부는 train()에서 결정 =====
         # 여기서는 모델만 로드
         use_vllm = self.grpo_config.get("use_vllm", True)
         
-        # ===== 모델 로드 (DDP 호환 모드) =====
+        # ===== 모델 로드 (항상 DDP 호환 모드) =====
         logger.info(f"📥 모델 로드 중: {model_name}")
         max_seq_length = (
             self.training_config.get("max_prompt_length", 512) + 
             self.training_config.get("max_response_length", 1024)
         )
-        
-        # DDP 환경에서는 각 프로세스가 자신의 GPU에만 모델 로드
-        if is_distributed:
-            torch.cuda.set_device(local_rank)
-            # DDP 환경에서는 각 프로세스가 자신의 GPU만 보도록 설정
-            # device_map을 명시적으로 특정 GPU로 지정
-            device_map = {"": local_rank}  # 빈 문자열은 기본 디바이스를 의미
-            logger.info(f"🚀 DDP 모드: GPU {local_rank}에 모델 로드...")
-        else:
-            device_map = "auto"  # 단일 GPU일 때는 자동 분산 가능
-            logger.info("🚀 단일 프로세스 모드: 모델 로드...")
 
         try:
             logger.info("🚀 Flash Attention 2로 모델 로드 시도...")
             self.model, self.tokenizer = FastLanguageModel.from_pretrained(
                 model_name=model_name,
                 max_seq_length=max_seq_length,
-                load_in_4bit=False,
+                load_in_4bit=True,
                 load_in_8bit=False,
                 fast_inference=use_vllm, 
-                # gpu_memory_utilization=self.grpo_config.get("vllm_gpu_memory_utilization", 0.3),
-                gpu_memory_utilization=0.9 if use_vllm else None,
-                # unsloth_vllm_stanby=True if use_vllm else False,
-                float8_kv_cache=True if use_vllm else False,
-                # attn_implementation="flash_attention_2",  # ✅ 명시적 지정
-                device_map=device_map,  # ✅ DDP 호환
+                # unsloth_vllm_stanby=True,
+                float8_kv_cache=use_vllm,
+                attn_implementation="flash_attention_2",  # ✅ 명시적 지정
             )
-            # logger.info("✅ Flash Attention 2 활성화 성공!")
+            logger.info("✅ Flash Attention 2 활성화 성공!")
             
         except Exception as e:
             logger.warning(f"⚠️ Flash Attention 2 로드 실패: {e}")
@@ -308,62 +276,8 @@ class OptimizedGRPOTrainer:
                 fast_inference=use_vllm, 
                 # unsloth_vllm_stanby=True,
                 float8_kv_cache=use_vllm,
-                device_map=device_map,  # ✅ DDP 호환
                 # attn_implementation 지정 안 함
             )
-        
-        # ✅ DDP 환경에서 모델이 올바른 GPU에 있는지 확인 및 이동
-        if is_distributed:
-            logger.info(f"🔧 모델 디바이스 확인 중 (예상: GPU {local_rank})...")
-            target_device = torch.device(f"cuda:{local_rank}")
-            
-            # 모든 파라미터의 디바이스 확인
-            param_devices = set()
-            for param in self.model.parameters():
-                param_devices.add(param.device)
-            
-            logger.info(f"   현재 파라미터 디바이스: {param_devices}")
-            
-            # 모든 파라미터가 올바른 GPU에 있는지 확인
-            all_on_target = all(
-                param.device == target_device or param.device.index == local_rank
-                for param in self.model.parameters()
-            )
-            
-            if not all_on_target or len(param_devices) > 1:
-                logger.warning(
-                    f"⚠️ 모델이 여러 GPU에 분산되어 있습니다: {param_devices}\n"
-                    f"   GPU {local_rank}로 통합 이동 중..."
-                )
-                
-                # 4-bit quantization 모델의 경우 특별한 처리가 필요
-                # Unsloth 모델은 내부적으로 device_map을 관리하므로
-                # 직접 이동보다는 모델의 디바이스 속성을 확인하고 조정
-                try:
-                    # 모델의 base_model이 있다면 그것도 확인
-                    if hasattr(self.model, 'base_model'):
-                        base_model = self.model.base_model
-                    else:
-                        base_model = self.model
-                    
-                    # 각 레이어를 확인하고 이동
-                    for name, module in base_model.named_modules():
-                        for param_name, param in module.named_parameters(recurse=False):
-                            if param.device.index != local_rank:
-                                # 파라미터를 올바른 GPU로 이동
-                                param.data = param.data.to(target_device)
-                    
-                    # 버퍼도 이동
-                    for name, buffer in base_model.named_buffers():
-                        if buffer.device.index != local_rank:
-                            buffer.data = buffer.data.to(target_device)
-                    
-                    logger.info(f"✅ 모델 파라미터를 GPU {local_rank}로 이동 완료")
-                except Exception as e:
-                    logger.error(f"❌ 모델 이동 실패: {e}")
-                    logger.error("   DDP가 실패할 수 있습니다. device_map=None으로 재시도하세요.")
-            else:
-                logger.info(f"✅ 모델이 이미 GPU {local_rank}에 올바르게 로드되었습니다")
         
         # ✅ 최종 확인
         if hasattr(self.model.config, '_attn_implementation'):
@@ -521,6 +435,25 @@ class OptimizedGRPOTrainer:
         # 데이터셋 길이 확인 및 max_steps 계산
         train_dataset_len = len(train_dataset) if hasattr(train_dataset, '__len__') else None
         
+        # max_steps 설정: 데이터셋이 비어있거나 길이를 알 수 없을 때를 대비
+        max_steps = None
+        if train_dataset_len is not None and train_dataset_len > 0:
+            # 데이터셋이 있으면 epochs 기반으로 계산
+            num_epochs = self.training_config.get("epochs", 1)
+            steps_per_epoch = train_dataset_len // (
+                batch_size * self.training_config.get("gradient_accumulation_steps", 4) * max(world_size, 1)
+            )
+            if steps_per_epoch > 0:
+                max_steps = num_epochs * steps_per_epoch
+                logger.info(f"계산된 max_steps: {max_steps} (데이터셋 크기: {train_dataset_len}, epochs: {num_epochs})")
+        else:
+            # 데이터셋이 비어있거나 길이를 알 수 없으면 명시적으로 설정 필요
+            max_steps = self.training_config.get("max_steps", None)
+            if max_steps is None:
+                logger.warning(
+                    "⚠️ 데이터셋 길이를 알 수 없습니다. max_steps를 명시적으로 설정하거나 "
+                    "데이터셋이 비어있지 않은지 확인하세요."
+                )
         
         grpo_config = GRPOConfig(
             # 기본 설정
@@ -530,7 +463,7 @@ class OptimizedGRPOTrainer:
             gradient_accumulation_steps=self.training_config.get("gradient_accumulation_steps", 4),
             
             # max_steps 설정 (데이터셋이 비어있을 때 필수)
-            max_steps=self.training_config.get("max_steps", -1),
+            max_steps=max_steps if max_steps is not None else -1,
             
             # Learning rate
             learning_rate=self.training_config.get("learning_rate", 5e-6),
@@ -545,16 +478,16 @@ class OptimizedGRPOTrainer:
             beta=self.grpo_config.get("beta", 0.01),  # 0이 아닌 작은 값
             
             # 최적화
-            optim="adamw_8bit",
-            # gradient_checkpointing=True,
-            # bf16=True,
+            optim="paged_adamw_8bit",
+            gradient_checkpointing=True,
+            bf16=True,
             # DDP 설정
             
             # ===== 🎯 vLLM 설정 (수정됨) =====
-            # use_vllm=use_vllm,
-            # vllm_mode=vllm_mode,  # ✅ separate 또는 None
-            # vllm_gpu_memory_utilization=self.grpo_config.get("vllm_gpu_memory_utilization", 0.3),  # ✅ 메모리 누수 방지를 위해 낮게 설정
-            # vllm_enable_sleep_mode=self.grpo_config.get("vllm_enable_sleep_mode", True),
+            use_vllm=use_vllm,
+            vllm_mode=vllm_mode,  # ✅ separate 또는 None
+            vllm_gpu_memory_utilization=self.grpo_config.get("vllm_gpu_memory_utilization", 0.3),  # ✅ 메모리 누수 방지를 위해 낮게 설정
+            vllm_enable_sleep_mode=self.grpo_config.get("vllm_enable_sleep_mode", True),
             # 로깅 및 저장
             logging_steps=self.training_config.get("logging_steps", 10),
             save_steps=self.training_config.get("save_steps", 500),
@@ -602,7 +535,7 @@ class OptimizedGRPOTrainer:
             eval_dataset=validation_dataset,
         )
         trainer.add_callback(VLLMMemoryMonitor())
-        # trainer.add_callback(AggressiveVLLMCleanup())
+        trainer.add_callback(AggressiveVLLMCleanup())
 
         # 훈련 실행
         logger.info("🏃 훈련 시작!")
@@ -691,8 +624,7 @@ def main(cfg: DictConfig) -> None:
     # enavle_think 및 훈련 날짜 폴더데 model 저장
     enable_think = cfg.training.training.enable_think
     train_date = datetime.now().strftime("%Y%m%d")
-    num_generations = cfg.training.grpo.num_generations
-    model_dir = os.path.join(cfg.paths.model_dir, f"enable_think_{enable_think}_{train_date}_{num_generations}")
+    model_dir = os.path.join(cfg.paths.model_dir, f"enable_think_{enable_think}_{train_date}")
     os.makedirs(model_dir, exist_ok=True)
     # 입력 파일 경로 확인
     train_data_path = os.path.join(cfg.paths.data_dir, "curated", "train_filtered.parquet")

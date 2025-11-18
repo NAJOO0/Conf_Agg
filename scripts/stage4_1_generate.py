@@ -190,27 +190,14 @@ def generate_solutions_batch(
     return results
 
 
-def generate_baseline(
+def load_baseline_model(
     model_name: str,
-    problems: list,
-    output_path: str,
-    num_solutions: int,
-    base_instruction: str,
-    enable_thinking: bool,
-    temperature: float,
-    max_tokens: int,
-    top_p: float,
-    top_k: int,
-    min_p: float,
-    logprobs: int,
     gpu_memory_utilization: float,
-    max_model_len: int,
-    confidence_calculator: ConfidenceCalculator,
-    math_verifier: MathVerifier
-):
-    """Baseline 모델로 solution 생성"""
+    max_model_len: int
+) -> tuple:
+    """Baseline 모델과 토크나이저 로드"""
     logger.info("=" * 60)
-    logger.info("Baseline 모델 Solution 생성 시작")
+    logger.info("Baseline 모델 로드 시작")
     logger.info("=" * 60)
     
     # 토크나이저 로드
@@ -235,49 +222,12 @@ def generate_baseline(
     )
     logger.info("Baseline 모델 로드 완료")
     
-    try:
-        # 배치 생성
-        results = generate_solutions_batch(
-            llm=llm,
-            tokenizer=tokenizer,
-            problems=problems,
-            num_solutions=num_solutions,
-            base_instruction=base_instruction,
-            enable_thinking=enable_thinking,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            top_p=top_p,
-            top_k=top_k,
-            min_p=min_p,
-            logprobs=logprobs,
-            confidence_calculator=confidence_calculator,
-            math_verifier=math_verifier
-        )
-        
-        # 저장
-        output_data = {
-            "dataset_name": problems[0].get("dataset_name", "unknown"),
-            "total_problems": len(problems),
-            "generated_solutions": results
-        }
-        
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(output_data, f, ensure_ascii=False, indent=2)
-        
-        logger.info(f"Baseline 결과 저장 완료: {output_path}")
-        
-    finally:
-        # 모델 unload
-        logger.info("Baseline 모델 unload 중...")
-        del llm
-        torch.cuda.empty_cache()
-        logger.info("Baseline 모델 unload 완료")
+    return llm, tokenizer
 
 
-def generate_aggllm(
-    model_name: str,
-    aggllm_model_path: str,
+def generate_baseline_for_dataset(
+    llm: LLM,
+    tokenizer: AutoTokenizer,
     problems: list,
     output_path: str,
     num_solutions: int,
@@ -289,15 +239,55 @@ def generate_aggllm(
     top_k: int,
     min_p: float,
     logprobs: int,
-    gpu_memory_utilization: float,
-    max_model_len: int,
-    merged_model_cache_dir: str,
     confidence_calculator: ConfidenceCalculator,
     math_verifier: MathVerifier
 ):
-    """AggLLM 모델로 solution 생성"""
+    """이미 로드된 Baseline 모델로 특정 데이터셋에 대해 solution 생성"""
+    dataset_name = problems[0].get("dataset_name", "unknown")
+    logger.info(f"Baseline 모델로 {dataset_name} 데이터셋 생성 시작")
+    
+    # 배치 생성
+    results = generate_solutions_batch(
+        llm=llm,
+        tokenizer=tokenizer,
+        problems=problems,
+        num_solutions=num_solutions,
+        base_instruction=base_instruction,
+        enable_thinking=enable_thinking,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        top_p=top_p,
+        top_k=top_k,
+        min_p=min_p,
+        logprobs=logprobs,
+        confidence_calculator=confidence_calculator,
+        math_verifier=math_verifier
+    )
+    
+    # 저장
+    output_data = {
+        "dataset_name": dataset_name,
+        "total_problems": len(problems),
+        "generated_solutions": results
+    }
+    
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, ensure_ascii=False, indent=2)
+    
+    logger.info(f"Baseline 결과 저장 완료: {output_path}")
+
+
+def load_aggllm_model(
+    model_name: str,
+    aggllm_model_path: str,
+    gpu_memory_utilization: float,
+    max_model_len: int,
+    merged_model_cache_dir: str
+) -> tuple:
+    """AggLLM 모델과 토크나이저 로드"""
     logger.info("=" * 60)
-    logger.info("AggLLM 모델 Solution 생성 시작")
+    logger.info("AggLLM 모델 로드 시작")
     logger.info("=" * 60)
     
     # 토크나이저 로드
@@ -356,44 +346,60 @@ def generate_aggllm(
     )
     logger.info("AggLLM 모델 로드 완료")
     
-    try:
-        # 배치 생성
-        results = generate_solutions_batch(
-            llm=llm,
-            tokenizer=tokenizer,
-            problems=problems,
-            num_solutions=num_solutions,
-            base_instruction=base_instruction,
-            enable_thinking=enable_thinking,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            top_p=top_p,
-            top_k=top_k,
-            min_p=min_p,
-            logprobs=logprobs,
-            confidence_calculator=confidence_calculator,
-            math_verifier=math_verifier
-        )
-        
-        # 저장
-        output_data = {
-            "dataset_name": problems[0].get("dataset_name", "unknown"),
-            "total_problems": len(problems),
-            "generated_solutions": results
-        }
-        
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(output_data, f, ensure_ascii=False, indent=2)
-        
-        logger.info(f"AggLLM 결과 저장 완료: {output_path}")
-        
-    finally:
-        # 모델 unload
-        logger.info("AggLLM 모델 unload 중...")
-        del llm
-        torch.cuda.empty_cache()
-        logger.info("AggLLM 모델 unload 완료")
+    return llm, tokenizer
+
+
+def generate_aggllm_for_dataset(
+    llm: LLM,
+    tokenizer: AutoTokenizer,
+    problems: list,
+    output_path: str,
+    num_solutions: int,
+    base_instruction: str,
+    enable_thinking: bool,
+    temperature: float,
+    max_tokens: int,
+    top_p: float,
+    top_k: int,
+    min_p: float,
+    logprobs: int,
+    confidence_calculator: ConfidenceCalculator,
+    math_verifier: MathVerifier
+):
+    """이미 로드된 AggLLM 모델로 특정 데이터셋에 대해 solution 생성"""
+    dataset_name = problems[0].get("dataset_name", "unknown")
+    logger.info(f"AggLLM 모델로 {dataset_name} 데이터셋 생성 시작")
+    
+    # 배치 생성
+    results = generate_solutions_batch(
+        llm=llm,
+        tokenizer=tokenizer,
+        problems=problems,
+        num_solutions=num_solutions,
+        base_instruction=base_instruction,
+        enable_thinking=enable_thinking,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        top_p=top_p,
+        top_k=top_k,
+        min_p=min_p,
+        logprobs=logprobs,
+        confidence_calculator=confidence_calculator,
+        math_verifier=math_verifier
+    )
+    
+    # 저장
+    output_data = {
+        "dataset_name": dataset_name,
+        "total_problems": len(problems),
+        "generated_solutions": results
+    }
+    
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, ensure_ascii=False, indent=2)
+    
+    logger.info(f"AggLLM 결과 저장 완료: {output_path}")
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="config")
@@ -421,28 +427,28 @@ def main(cfg: DictConfig) -> None:
         logger.info(f"GPU 설정: device=0, GPU={torch.cuda.get_device_name(0)}")
     
     logger.info("🚀 Stage 4-1: Solution 생성 시작")
-    
+
+    eval_config = cfg.evaluation.benchmarks.evaluation
+    enable_thinking = eval_config.get("enable_thinking", False)
+
     # 디렉토리 생성
     os.makedirs(cfg.paths.output_dir, exist_ok=True)
     results_dir = os.path.join(cfg.paths.output_dir, "comprehensive_results")
-    results_dir = os.path.join(results_dir, cfg.model.base_model.replace('/', '_'))
+    results_dir = os.path.join(results_dir, cfg.model.base_model.replace('/', '_') + f"_think_{enable_thinking}")
     os.makedirs(results_dir, exist_ok=True)
     
     # 모델 경로 확인
-    checkpoint_num = cfg.evaluation.benchmarks.evaluation.checkpoint_num
-    if checkpoint_num is not None:
-        aggllm_model_path = os.path.join(cfg.paths.model_dir, f"checkpoint-{checkpoint_num}")
-    else:
-        aggllm_model_path = os.path.join(cfg.paths.model_dir, "checkpoint-final")
-    
-    if not os.path.exists(aggllm_model_path):
-        logger.warning(f"AggLLM 모델을 찾을 수 없습니다: {aggllm_model_path}")
-        logger.warning("Baseline 모델만 사용하여 생성합니다.")
-        aggllm_model_path = None
+    # checkpoint_num = cfg.evaluation.benchmarks.evaluation.checkpoint_num
+    checkpoint_num = None
+    aggllm_model_path = None
+    # if checkpoint_num is not None:
+    #     aggllm_model_path = os.path.join(cfg.paths.model_dir, f"checkpoint-{checkpoint_num}")
+    # else:
+    #     aggllm_model_path = None
+    #     logger.warning("AggLLM 모델을 찾을 수 없습니다. Baseline 모델만 사용하여 생성합니다.")
     
     # 평가 구성 요소 초기화
-    eval_config = cfg.evaluation.benchmarks.evaluation
-    enable_thinking = eval_config.get("enable_thinking", False)
+    
     confidence_group_size = eval_config.get("confidence_group_size", 512)
     
     confidence_calculator = ConfidenceCalculator(group_size=confidence_group_size)
@@ -458,16 +464,13 @@ def main(cfg: DictConfig) -> None:
         {"name": "HMMT25", "path": "MathArena/hmmt_feb_2025"},
     ]
     
-    # 각 데이터셋에 대해 생성
+    # 모든 데이터셋 미리 로드
+    all_datasets = []
     for benchmark in benchmark_datasets:
         dataset_name = benchmark["name"]
         dataset_path = benchmark["path"]
         
-        logger.info("=" * 60)
-        logger.info(f"데이터셋: {dataset_name}")
-        logger.info("=" * 60)
-        
-        # 데이터셋 로드
+        logger.info(f"데이터셋 로드 중: {dataset_name}")
         problems = load_dataset_data(dataset_path)
         if not problems:
             logger.warning(f"{dataset_name} 데이터셋 로드 실패, 건너뜀")
@@ -478,71 +481,145 @@ def main(cfg: DictConfig) -> None:
             p["dataset_name"] = dataset_name
         
         dataset_safe_name = dataset_path.replace('/', '_')
-        
-        # Stage 1: Baseline 생성
-        baseline_output_path = os.path.join(
-            results_dir, 
-            f"{dataset_safe_name}_baseline_generated.json"
+        all_datasets.append({
+            "name": dataset_name,
+            "path": dataset_path,
+            "safe_name": dataset_safe_name,
+            "problems": problems
+        })
+    
+    logger.info(f"총 {len(all_datasets)}개 데이터셋 로드 완료")
+    
+    # Stage 1: Baseline 모델로 모든 데이터셋 생성
+    logger.info("=" * 60)
+    logger.info("Baseline 모델로 모든 데이터셋 생성 시작")
+    logger.info("=" * 60)
+    
+    baseline_llm = None
+    baseline_tokenizer = None
+    
+    try:
+        # Baseline 모델 로드
+        baseline_llm, baseline_tokenizer = load_baseline_model(
+            model_name=cfg.model.base_model,
+            gpu_memory_utilization=eval_config.get("gpu_memory_utilization", 0.9),
+            max_model_len=eval_config.get("max_model_len", eval_config.max_tokens + 8192)
         )
         
-        try:
-            generate_baseline(
-                model_name=cfg.model.base_model,
-                problems=problems,
-                output_path=baseline_output_path,
-                num_solutions=32,
-                base_instruction=base_instruction,
-                enable_thinking=enable_thinking,
-                temperature=eval_config.temperature,
-                max_tokens=eval_config.max_tokens,
-                top_p=eval_config.get("top_p", 0.95),
-                top_k=eval_config.get("top_k", 20),
-                min_p=eval_config.get("min_p", 0.0),
-                logprobs=eval_config.get("logprobs", 5),
-                gpu_memory_utilization=eval_config.get("gpu_memory_utilization", 0.9),
-                max_model_len=eval_config.get("max_model_len", eval_config.max_tokens + 8192),
-                confidence_calculator=confidence_calculator,
-                math_verifier=math_verifier
-            )
-        except Exception as e:
-            logger.error(f"{dataset_name} Baseline 생성 실패: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            continue
-        
-        # Stage 2: AggLLM 생성
-        if aggllm_model_path:
-            aggllm_output_path = os.path.join(
-                results_dir,
-                f"{dataset_safe_name}_aggllm_generated.json"
+        # 각 데이터셋에 대해 생성
+        for dataset_info in all_datasets:
+            dataset_name = dataset_info["name"]
+            dataset_safe_name = dataset_info["safe_name"]
+            problems = dataset_info["problems"]
+            
+            logger.info("=" * 60)
+            logger.info(f"Baseline - 데이터셋: {dataset_name}")
+            logger.info("=" * 60)
+            
+            baseline_output_path = os.path.join(
+                results_dir, 
+                f"{dataset_safe_name}_baseline_generated.json"
             )
             
             try:
-                generate_aggllm(
-                    model_name=cfg.model.base_model,
-                    aggllm_model_path=aggllm_model_path,
+                generate_baseline_for_dataset(
+                    llm=baseline_llm,
+                    tokenizer=baseline_tokenizer,
                     problems=problems,
-                    output_path=aggllm_output_path,
-                    num_solutions=16,
+                    output_path=baseline_output_path,
+                    num_solutions=64,
                     base_instruction=base_instruction,
                     enable_thinking=enable_thinking,
                     temperature=eval_config.temperature,
                     max_tokens=eval_config.max_tokens,
-                    top_p=eval_config.get("top_p", 0.8),
+                    top_p=eval_config.get("top_p", 0.95),
                     top_k=eval_config.get("top_k", 20),
                     min_p=eval_config.get("min_p", 0.0),
                     logprobs=eval_config.get("logprobs", 5),
-                    gpu_memory_utilization=eval_config.get("aggllm_gpu_memory_utilization", 0.4),
-                    max_model_len=eval_config.get("max_model_len", eval_config.max_tokens + 8192),
-                    merged_model_cache_dir=cfg.paths.get("merged_model_cache_dir", None),
                     confidence_calculator=confidence_calculator,
                     math_verifier=math_verifier
                 )
             except Exception as e:
-                logger.error(f"{dataset_name} AggLLM 생성 실패: {e}")
+                logger.error(f"{dataset_name} Baseline 생성 실패: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
                 continue
+        
+    finally:
+        # Baseline 모델 unload
+        if baseline_llm is not None:
+            logger.info("Baseline 모델 unload 중...")
+            del baseline_llm
+            del baseline_tokenizer
+            torch.cuda.empty_cache()
+            logger.info("Baseline 모델 unload 완료")
+    
+    # Stage 2: AggLLM 모델로 모든 데이터셋 생성
+    if aggllm_model_path:
+        logger.info("=" * 60)
+        logger.info("AggLLM 모델로 모든 데이터셋 생성 시작")
+        logger.info("=" * 60)
+        
+        aggllm_llm = None
+        aggllm_tokenizer = None
+        
+        try:
+            # AggLLM 모델 로드
+            aggllm_llm, aggllm_tokenizer = load_aggllm_model(
+                model_name=cfg.model.base_model,
+                aggllm_model_path=aggllm_model_path,
+                gpu_memory_utilization=eval_config.get("aggllm_gpu_memory_utilization", 0.9),
+                max_model_len=eval_config.get("max_model_len", eval_config.max_tokens + 8192),
+                merged_model_cache_dir=cfg.paths.get("merged_model_cache_dir", None)
+            )
+            
+            # 각 데이터셋에 대해 생성
+            for dataset_info in all_datasets:
+                dataset_name = dataset_info["name"]
+                dataset_safe_name = dataset_info["safe_name"]
+                problems = dataset_info["problems"]
+                
+                logger.info("=" * 60)
+                logger.info(f"AggLLM - 데이터셋: {dataset_name}")
+                logger.info("=" * 60)
+                
+                aggllm_output_path = os.path.join(
+                    results_dir,
+                    f"{dataset_safe_name}_aggllm_generated.json"
+                )
+                
+                try:
+                    generate_aggllm_for_dataset(
+                        llm=aggllm_llm,
+                        tokenizer=aggllm_tokenizer,
+                        problems=problems,
+                        output_path=aggllm_output_path,
+                        num_solutions=32,
+                        base_instruction=base_instruction,
+                        enable_thinking=enable_thinking,
+                        temperature=eval_config.temperature,
+                        max_tokens=eval_config.max_tokens,
+                        top_p=eval_config.get("top_p", 0.8),
+                        top_k=eval_config.get("top_k", 20),
+                        min_p=eval_config.get("min_p", 0.0),
+                        logprobs=eval_config.get("logprobs", 5),
+                        confidence_calculator=confidence_calculator,
+                        math_verifier=math_verifier
+                    )
+                except Exception as e:
+                    logger.error(f"{dataset_name} AggLLM 생성 실패: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    continue
+        
+        finally:
+            # AggLLM 모델 unload
+            if aggllm_llm is not None:
+                logger.info("AggLLM 모델 unload 중...")
+                del aggllm_llm
+                del aggllm_tokenizer
+                torch.cuda.empty_cache()
+                logger.info("AggLLM 모델 unload 완료")
     
     logger.info("=" * 60)
     logger.info("✅ Stage 4-1: Solution 생성 완료")

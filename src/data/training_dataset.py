@@ -10,6 +10,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# PyArrow import (nested data 처리용)
+try:
+    import pyarrow.parquet as pq
+    HAS_PYARROW = True
+except ImportError:
+    HAS_PYARROW = False
+    logger.warning("PyArrow를 사용할 수 없습니다. nested data 로드에 문제가 있을 수 있습니다.")
+
 
 class CuratedTrainingDataset(Dataset):
     """큐레이션된 훈련 데이터셋"""
@@ -25,10 +33,34 @@ class CuratedTrainingDataset(Dataset):
     def _load_data(self) -> List[Dict[str, Any]]:
         """데이터를 로드합니다."""
         try:
-            df = pd.read_parquet(self.data_path)
+            # PyArrow를 사용하여 nested data 처리
+            if HAS_PYARROW:
+                try:
+                    # memory_map=False로 시도 (큰 파일의 경우 더 안정적)
+                    table = pq.read_table(self.data_path, memory_map=False)
+                    # types_mapper를 사용하여 Arrow 타입 유지
+                    df = table.to_pandas(types_mapper=pd.ArrowDtype)
+                except Exception as e1:
+                    logger.warning(f"PyArrow types_mapper 사용 실패: {e1}, 기본 변환으로 재시도...")
+                    try:
+                        # types_mapper 없이 시도
+                        table = pq.read_table(self.data_path, memory_map=False)
+                        df = table.to_pandas()
+                    except Exception as e2:
+                        logger.warning(f"PyArrow 기본 변환 실패: {e2}, pandas로 직접 로드 시도...")
+                        df = pd.read_parquet(self.data_path)
+            else:
+                df = pd.read_parquet(self.data_path)
+            
+            # 데이터가 비어있는지 확인
+            if len(df) == 0:
+                logger.warning(f"데이터셋이 비어있습니다: {self.data_path}")
+                return []
+            
+            logger.info(f"데이터 로드 성공: {len(df)}개 샘플")
             return df.to_dict('records')
         except Exception as e:
-            logger.error(f"데이터 로드 실패: {e}")
+            logger.error(f"데이터 로드 실패: {e}", exc_info=True)
             return []
     
     def __len__(self) -> int:

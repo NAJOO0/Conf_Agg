@@ -38,7 +38,7 @@ def main(cfg: DictConfig) -> None:
     os.makedirs(os.path.join(cfg.paths.data_dir, "curated"), exist_ok=True)
     
     # 입력 파일 경로
-    generated_data_path = os.path.join(cfg.paths.data_dir, "generated", "dataset_train_4000.parquet")
+    generated_data_path = os.path.join(cfg.paths.data_dir, "generated", "dataset_train.parquet")
     
     if not os.path.exists(generated_data_path):
         logger.error(f"Stage 1 결과 파일을 찾을 수 없습니다: {generated_data_path}")
@@ -58,11 +58,20 @@ def main(cfg: DictConfig) -> None:
             cfg.data.curation,
             "prompt_template",
             (
-                "Given the following problem:\n{problem}\n"
-                "and these solution attempts:\n{solutions}\n"
-                "It is possible that any, all, or none of these solutions are correct or complete. Carefully review the\n"
-                "provided solutions, using them as starting points—correcting mistakes, filling in gaps, and/or combining\n"
-                "useful ideas—to produce a final, comprehensive, and correct solution to the problem."
+                "You are an expert mathematician and critical analyst.\n"
+                "Your task is to synthesize multiple, potentially flawed, solution attempts "
+                "into a single, correct, and comprehensive final answer.\n\n"
+                "You will be given a problem, followed by several solution attempts.\n"
+                "Solution attempts include confidence scores to help estimate their quality.\n\n"
+                "Carefully review all the provided information. It is possible that any, all, or none "
+                "of the solutions are correct or complete.\n"
+                "Use them as starting points—correcting mistakes, filling in gaps, and/or combining "
+                "useful ideas—to produce your final solution.\n\n"
+                "---\n"
+                "GIVEN THE FOLLOWING PROBLEM:\n{problem}\n\n"
+                "AND THESE SOLUTION ATTEMPTS:\n{solutions}\n\n"
+                "---\n"
+                "Now, provide the final, comprehensive, and correct solution to the problem."
             ),
         ),
     )

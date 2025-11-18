@@ -1,6 +1,6 @@
 # @package data.raw_dataset
 generation:
-  num_responses_per_problem: 5  # 각 문제당 8개 응답
+  num_responses_per_problem: 12  # 각 문제당 8개 응답
   enable_thinking: false
   temperature: 0.7
   max_tokens: 10240 # max_model_len과 동일하게 설정

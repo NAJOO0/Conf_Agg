@@ -149,21 +149,30 @@ def load_parquet_file(file_path: str) -> Optional[pd.DataFrame]:
     
     logger.info(f"파일 로드 중: {file_path}")
     try:
-        if HAS_PYARROW:
+        # 먼저 기본 pandas read_parquet로 시도 (가장 안정적)
+        try:
+            df = pd.read_parquet(file_path, engine='pyarrow')
+        except Exception as e1:
+            logger.warning(f"PyArrow engine 실패: {e1}, fastparquet로 재시도...")
             try:
-                table = pq.read_table(file_path, memory_map=False)
-                df = table.to_pandas(types_mapper=pd.ArrowDtype)
-            except Exception as e:
-                logger.warning(f"PyArrow memory_map=False 실패: {e}, memory_map=True로 재시도...")
+                df = pd.read_parquet(file_path, engine='fastparquet')
+            except Exception as e2:
+                logger.warning(f"fastparquet 실패: {e2}, 기본 설정으로 재시도...")
                 try:
-                    table = pq.read_table(file_path, memory_map=True)
-                    df = table.to_pandas(types_mapper=pd.ArrowDtype)
-                except Exception as e2:
-                    logger.warning(f"PyArrow types_mapper 사용 실패: {e2}, 기본 변환으로 재시도...")
-                    table = pq.read_table(file_path, memory_map=False)
-                    df = table.to_pandas()
-        else:
-            df = pd.read_parquet(file_path)
+                    df = pd.read_parquet(file_path)
+                except Exception as e3:
+                    # 마지막 시도: PyArrow로 직접 읽기 (중첩 데이터 제외)
+                    if HAS_PYARROW:
+                        logger.warning(f"기본 pandas read_parquet 실패: {e3}, PyArrow 직접 읽기 시도...")
+                        try:
+                            table = pq.read_table(file_path, memory_map=False, columns=['prompt', 'problem_id', 'problem_text', 'ground_truth', 'set_id'])
+                            df = table.to_pandas()
+                            logger.info("PyArrow로 필수 컬럼만 로드 성공")
+                        except Exception as e4:
+                            logger.error(f"모든 로드 방법 실패: {e4}")
+                            raise e4
+                    else:
+                        raise e3
 
         logger.info(f"로드 완료: {len(df)}개 행")
         logger.info(f"컬럼: {df.columns.to_list()}")
@@ -280,9 +289,11 @@ def print_statistics(token_counts: np.ndarray, dataset_name: str):
             labels = ['0-500', '500-1K', '1K-1.5K', '1.5K-2K', '2K-2.5K', 
                      '2.5K-3K', '3K-3.5K', '3.5K-4K', '4K+']
         else:
-            bins = [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, float('inf')]
-            labels = ['0-1K', '1K-2K', '2K-3K', '3K-4K', '4K-5K', 
-                     '5K-6K', '6K-7K', '7K-8K', '8K+']
+            bins = [0, 1000, 2000, 4000, 6000, 8000, 10000, 12000, 14000, 16000, float('inf')]
+            labels = [
+                '0-1K', '1K-2K', '2K-4K', '4K-6K', '6K-8K',
+                '8K-10K', '10K-12K', '12K-14K', '14K-16K', '16K+'
+            ]
         
         for i in range(len(bins)-1):
             if i < len(bins) - 1:
@@ -565,8 +576,8 @@ if __name__ == "__main__":
                        help="모델 이름 또는 경로 (tokenizer 로드용)")
     parser.add_argument("--output-dir", type=str, default="/mnt/data1/datasets/nlp/conf_agg/curated",
                        help="출력 디렉토리 (기본값: train 파일이 있는 디렉토리)")
-    parser.add_argument("--max-input-length", type=int, default=8092,
-                       help="최대 입력 길이 제한 (이 값을 넘는 인스턴스 제거, 예: 8092)")
+    parser.add_argument("--max-input-length", type=int, default=16384,
+                       help="최대 입력 길이 제한 (이 값을 넘는 인스턴스 제거, 예: 32768)")
     
     args = parser.parse_args()
     

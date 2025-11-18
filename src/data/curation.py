@@ -8,6 +8,7 @@ import logging
 from collections import defaultdict
 import random
 import os
+import json
 from transformers import AutoTokenizer
 # PyArrow 가용성 확인
 try:
@@ -20,6 +21,29 @@ from src.evaluation.math_verifier import MathVerifier
 from src.data.dataset import GeneratedDataset
 
 logger = logging.getLogger(__name__)
+
+
+def _serialize_nested_data(sets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    중첩된 데이터 구조를 JSON 문자열로 변환하여 Parquet 저장 호환성 확보
+    
+    Args:
+        sets: 세트 리스트
+    
+    Returns:
+        JSON 문자열로 변환된 세트 리스트
+    """
+    serialized_sets = []
+    for set_info in sets:
+        serialized_set = set_info.copy()
+        # solutions 리스트를 JSON 문자열로 변환
+        if 'solutions' in serialized_set and isinstance(serialized_set['solutions'], list):
+            serialized_set['solutions'] = json.dumps(serialized_set['solutions'], ensure_ascii=False)
+        # confidence_scores 딕셔너리를 JSON 문자열로 변환
+        if 'confidence_scores' in serialized_set and isinstance(serialized_set['confidence_scores'], dict):
+            serialized_set['confidence_scores'] = json.dumps(serialized_set['confidence_scores'], ensure_ascii=False)
+        serialized_sets.append(serialized_set)
+    return serialized_sets
 
 
 class DataCurator:
@@ -168,7 +192,7 @@ class DataCurator:
                     # 모두 사용 (이 경우 세트 수가 줄어듦)
                     selected_responses = responses
                     logger.warning(
-                        f"문제 {problem_id}: 응답 {len(responses)}개가 부족합니다. "
+                        f"문제 {problem_id}: 응답 {len(responses)}개로는 세트 생성에 부족합니다. "
                         f"필요: {required_responses}개, 세트 수가 {len(responses) // self.set_size}개로 제한됩니다."
                     )
             
@@ -253,7 +277,9 @@ class DataCurator:
         """
         큐레이션 전략을 적용합니다.
         
-        기본 전략: Hard 전부 + Hard의 50%만큼 Easy
+        기본 전략: Easy가 Hard의 50%가 되도록 조정
+        - Easy가 부족하면 Hard를 줄여서 비율 맞춤
+        - Easy가 많으면 Easy를 줄여서 비율 맞춤
         
         Args:
             hard_sets: Hard 문제 세트들
@@ -264,16 +290,41 @@ class DataCurator:
         """
         logger.info(f"큐레이션 전략 적용: {self.strategy}")
         
-        # 기본 전략: Hard 전부 + Hard의 50%만큼 Easy
-        num_easy_to_add = int(len(hard_sets) * self.easy_sample_percentage / 100)
-        if len(easy_sets) > 0:
-            selected_easy = random.sample(easy_sets, min(num_easy_to_add, len(easy_sets)))
-        else:
+        # 목표: Easy가 Hard의 50%가 되도록 조정
+        num_easy_target = int(len(hard_sets) * self.easy_sample_percentage / 100)
+        
+        if len(easy_sets) == 0:
+            # Easy가 없으면 Hard만 반환
+            selected_hard = hard_sets.copy()
             selected_easy = []
+        elif len(easy_sets) < num_easy_target:
+            # Easy가 부족하면 Hard를 줄여서 비율 맞춤
+            # Easy = Hard * 0.5 이므로, Hard = Easy * 2
+            num_hard_target = int(len(easy_sets) * 100 / self.easy_sample_percentage)
+            selected_hard = random.sample(hard_sets, min(num_hard_target, len(hard_sets)))
+            selected_easy = easy_sets.copy()
+            logger.info(
+                f"Easy가 부족하여 Hard를 조정: "
+                f"Hard {len(hard_sets)}개 -> {len(selected_hard)}개, "
+                f"Easy {len(easy_sets)}개 유지"
+            )
+        else:
+            # Easy가 충분하면 Easy를 줄여서 비율 맞춤
+            selected_hard = hard_sets.copy()
+            selected_easy = random.sample(easy_sets, num_easy_target)
+            logger.info(
+                f"Easy가 충분하여 Easy를 조정: "
+                f"Hard {len(hard_sets)}개 유지, "
+                f"Easy {len(easy_sets)}개 -> {len(selected_easy)}개"
+            )
         
-        logger.info(f"Hard 세트: {len(hard_sets)}개, 선택된 Easy 세트: {len(selected_easy)}개")
+        logger.info(f"최종 선택: Hard 세트 {len(selected_hard)}개, Easy 세트 {len(selected_easy)}개")
+        if len(selected_hard) > 0:
+            logger.info(f"Easy 비율: {len(selected_easy) / len(selected_hard) * 100:.2f}% (목표: {self.easy_sample_percentage}%)")
+        else:
+            logger.info("Hard 세트가 없어 비율 계산 불가")
         
-        return hard_sets + selected_easy
+        return selected_hard + selected_easy
     
     def split_train_validation(
         self, 
@@ -421,9 +472,11 @@ class DataCurator:
                 # 훈련/검증 분할
                 train_sets, validation_sets = self.split_train_validation(curated_sets, train_split)
                 
-                # 결과 저장
-                train_df = pd.DataFrame(train_sets)
-                validation_df = pd.DataFrame(validation_sets)
+                # 결과 저장 (중첩 데이터를 JSON으로 직렬화)
+                train_sets_serialized = _serialize_nested_data(train_sets)
+                validation_sets_serialized = _serialize_nested_data(validation_sets)
+                train_df = pd.DataFrame(train_sets_serialized)
+                validation_df = pd.DataFrame(validation_sets_serialized)
                 
                 train_path = os.path.join(output_dir, f"train_curated_size_{set_size}.parquet")
                 validation_path = os.path.join(output_dir, f"validation_curated_size_{set_size}.parquet")
@@ -493,9 +546,11 @@ class DataCurator:
             # set_size 복원
             self.set_size = original_set_size
             
-            # 모든 set_size를 포함한 최종 데이터셋 저장
-            train_df = pd.DataFrame(all_train_sets)
-            validation_df = pd.DataFrame(all_validation_sets)
+            # 모든 set_size를 포함한 최종 데이터셋 저장 (중첩 데이터를 JSON으로 직렬화)
+            all_train_sets_serialized = _serialize_nested_data(all_train_sets)
+            all_validation_sets_serialized = _serialize_nested_data(all_validation_sets)
+            train_df = pd.DataFrame(all_train_sets_serialized)
+            validation_df = pd.DataFrame(all_validation_sets_serialized)
             
             train_path = os.path.join(output_dir, "train_curated_multitask.parquet")
             validation_path = os.path.join(output_dir, "validation_curated_multitask.parquet")
@@ -526,9 +581,11 @@ class DataCurator:
             # 훈련/검증 분할
             train_sets, validation_sets = self.split_train_validation(curated_sets, train_split)
             
-            # 결과 저장
-            train_df = pd.DataFrame(train_sets)
-            validation_df = pd.DataFrame(validation_sets)
+            # 결과 저장 (중첩 데이터를 JSON으로 직렬화)
+            train_sets_serialized = _serialize_nested_data(train_sets)
+            validation_sets_serialized = _serialize_nested_data(validation_sets)
+            train_df = pd.DataFrame(train_sets_serialized)
+            validation_df = pd.DataFrame(validation_sets_serialized)
             
             train_path = os.path.join(output_dir, "train_curated.parquet")
             validation_path = os.path.join(output_dir, "validation_curated.parquet")

@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # GPU 설정 (인자가 없으면 기본값 0,1 사용)
-GPU_IDS=${1:-"1"}
+GPU_IDS=${1:-"0"}
 NUM_GPUS=$(echo $GPU_IDS | tr ',' '\n' | wc -l)
 
 # 기본 로그 디렉토리
@@ -84,7 +84,8 @@ fi
 
 # 환경 변수 설정
 export CUDA_VISIBLE_DEVICES=$GPU_IDS
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+# export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
 # DDP 환경 변수 제거 (단일 프로세스 모드)
 unset RANK
 unset LOCAL_RANK
@@ -95,7 +96,7 @@ echo "시작 시간: $(date)" >> "$LOG_FILE"
 echo "GPU IDs: $GPU_IDS" >> "$LOG_FILE"
 echo "모드: 단일 프로세스 (DDP 없음)" >> "$LOG_FILE"
 echo "vLLM 모드: colocate" >> "$LOG_FILE"
-echo "명령어: uv run python scripts/stage3_train_2.py" >> "$LOG_FILE"
+echo "명령어: uv run python scripts/stage3_train.py" >> "$LOG_FILE"
 echo "" >> "$LOG_FILE"
 
 # 백그라운드 실행 (torchrun 없이)

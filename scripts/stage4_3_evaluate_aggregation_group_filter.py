@@ -91,7 +91,7 @@ def format_solutions_for_aggregation(solutions: list, include_confidence: bool =
             f"final_answer: {sol['final_answer']}\n"
         )
         if include_confidence:
-            conf_value = sol["confidence_scores"].get("tail_confidence", None)
+            conf_value = sol["confidence_scores"].get("bottom_10_percent_confidence", None)
             conf_str = f"{conf_value:.4f}" if conf_value is not None else "N/A"
             lines[-1] += f"confidence: {conf_str}\n"
     return "\n".join(lines)
@@ -336,32 +336,28 @@ def main(cfg: DictConfig) -> None:
     math_verifier = MathVerifier(
         timeout=eval_config.timeout
     )
-    
-    # Aggregation 프롬프트 템플릿
-    # aggregation_prompt_template = (
-    #     "You are an expert mathematician and critical analyst.\n"
-    #     "Your task is to synthesize multiple, potentially flawed, solution attempts "
-    #     "into a single, correct, and comprehensive final answer.\n\n"
-    #     "You will be given a problem, followed by several solution attempts.\n"
-    #     "Solution attempts include confidence scores to help estimate their quality.\n\n"
-    #     "Carefully review all the provided information. It is possible that any, all, or none "
-    #     "of the solutions are correct or complete.\n"
-    #     "Use them as starting points—correcting mistakes, filling in gaps, and/or combining "
-    #     "useful ideas—to produce your final solution.\n\n"
-    #     "---\n"
-    #     "GIVEN THE FOLLOWING PROBLEM:\n{problem}\n\n"
-    #     "AND THESE SOLUTION ATTEMPTS:\n{solutions}\n\n"
-    #     "---\n"
-    #     "Now, provide the final, comprehensive, and correct solution to the problem."
-    # )
-    aggregation_prompt_template = (
-        "Given the following problem:\n{problem}\n"
-        "and these solution attempts:\n{solutions}\n"
-        "It is possible that any, all, or none of these solutions are correct or complete. Carefully review the\n"
-        "provided solutions, using them as starting points—correcting mistakes, filling in gaps, and/or combining\n"
-        "useful ideas—to produce a final, comprehensive, and correct solution to the problem."
+    # Aggregation 프롬프트 템플릿 2가지 정의
+    aggregation_prompt_template_with_conf = (
+        "Given the following problem:\n"
+        "{problem}\n"
+        "and these solution attempts with their confidence scores:\n"
+        "{solutions}\n"
+        "It is possible that any, all, or none of these solutions are correct or complete. "
+        "Carefully review the provided solutions, using them as starting points—correcting mistakes, "
+        "filling in gaps, and/or combining useful ideas—to produce a final, comprehensive, "
+        "and correct solution to the problem."
     )
-    # base_instruction = "Please reason step by step, and put your final answer within \\boxed{}."
+
+    aggregation_prompt_template_without_conf = (
+        "Given the following problem:\n"
+        "{problem}\n"
+        "and these solution attempts:\n"
+        "{solutions}\n"
+        "It is possible that any, all, or none of these solutions are correct or complete. "
+        "Carefully review the provided solutions, using them as starting points—correcting mistakes, "
+        "filling in gaps, and/or combining useful ideas—to produce a final, comprehensive, "
+        "and correct solution to the problem."
+    )
     
     # 벤치마크 데이터셋 설정
     benchmark_datasets = [

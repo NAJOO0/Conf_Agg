@@ -56,35 +56,9 @@ PROMPT_WITHOUT_CONFIDENCE = (
 )
 
 
-PROMPT_NO_GUIDANCE = (
-    "Given the following problem:\n"
-    "{problem}\n"
-    "and these solution attempts with their confidence scores:\n"
-    "{solutions}\n"
-    "It is possible that any, all, or none of these solutions are correct or complete. "
-    "Carefully review the provided solutions, using them as starting points—correcting mistakes, "
-    "filling in gaps, and/or combining useful ideas—to produce a final, comprehensive, "
-    "and correct solution to the problem."
-)
-
-
-PROMPT_FULL_GUIDANCE = (
-    "Given the following problem:\n"
-    "{problem}\n"
-    "and these solution attempts with their confidence scores:\n"
-    "{solutions}\n"
-    "It is possible that any, all, or none of these solutions are correct or complete. "
-    "Carefully review the provided solutions, using them as starting points—correcting mistakes, "
-    "filling in gaps, and/or combining useful ideas—to produce a final, comprehensive, "
-    "and correct solution to the problem."
-)
-
-
 PROMPT_VARIANT_TEMPLATES: Dict[str, str] = {
     "default": DEFAULT_PROMPT_TEMPLATE,
     "without_confidence": PROMPT_WITHOUT_CONFIDENCE,
-    "confidence_no_guidance": PROMPT_NO_GUIDANCE,
-    "confidence_full_guidance": PROMPT_FULL_GUIDANCE,
 }
 
 
@@ -138,42 +112,20 @@ def format_solutions_for_aggregation(
 
         if confidence_keys and variant_key != "without_confidence":
             conf_scores = sol.get("confidence_scores", {}) or {}
-            conf_lines: List[str] = []
 
-            if variant_key == "confidence_no_guidance":
-                if len(confidence_keys) == 1:
-                    key = confidence_keys[0]
-                    value = conf_scores.get(key)
-                    conf_lines.append(
-                        f"Confidence score: {value:.3f}" if value is not None else "Confidence score: N/A"
-                    )
-                else:
-                    for order, key in enumerate(confidence_keys, start=1):
-                        value = conf_scores.get(key)
-                        conf_lines.append(
-                            f"Confidence score {order}: {value:.3f}"
-                            if value is not None
-                            else f"Confidence score {order}: N/A"
-                        )
-            elif variant_key == "confidence_full_guidance":
-                for key in confidence_keys:
-                    label = confidence_labels.get(key, key)
-                    value = conf_scores.get(key)
-                    conf_lines.append(
-                        f"{label} Confidence score: {value:.3f}" if value is not None else f"{label} Confidence score: N/A"
-                    )
+            # 여러 confidence가 있으면 각각 별도 줄로 표시
+            if len(confidence_keys) == 1:
+                # 단일 confidence: "confidence: X" 형태
+                key = confidence_keys[0]
+                value = conf_scores.get(key)
+                conf_str = f"{value:.4f}" if value is not None else "N/A"
+                block_lines.append(f"confidence: {conf_str}")
             else:
-                for key in confidence_keys:
-                    label = confidence_labels.get(key, key)
+                # 복수 confidence: "confidence1: X", "confidence2: Y" 형태
+                for idx, key in enumerate(confidence_keys, start=1):
                     value = conf_scores.get(key)
-                    conf_lines.append(
-                        f"- {label}: {value:.4f}" if value is not None else f"- {label}: N/A"
-                    )
-
-            if conf_lines:
-                if variant_key in {"default"}:
-                    block_lines.append("confidence scores:")
-                block_lines.extend(conf_lines)
+                    conf_str = f"{value:.4f}" if value is not None else "N/A"
+                    block_lines.append(f"confidence{idx}: {conf_str}")
 
         solution_blocks.append("\n".join(block_lines))
 

@@ -48,28 +48,25 @@ def main(cfg: DictConfig) -> None:
     # baseline 전략인 경우 별도의 프롬프트 템플릿 사용
     if cfg.data.curation.strategy == "baseline":
         default_prompt_template = (
-            "Given the following problem:\n{problem}\n"
-            "and these solution attempts:\n{solutions}\n"
-            "It is possible that any, all, or none of these solutions are correct or complete. Carefully review the\n"
-            "provided solutions, using them as starting points—correcting mistakes, filling in gaps, and/or combining\n"
-            "useful ideas—to produce a final, comprehensive, and correct solution to the problem."
+            "Given the following problem:\n"
+            "{problem}\n"
+            "and these solution attempts:\n"
+            "{solutions}\n"
+            "It is possible that any, all, or none of these solutions are correct or complete. "
+            "Carefully review the provided solutions, using them as starting points—correcting mistakes, "
+            "filling in gaps, and/or combining useful ideas—to produce a final, comprehensive, "
+            "and correct solution to the problem."
         )
     else:
         default_prompt_template = (
-            "You are an expert mathematician and critical analyst.\n"
-            "Your task is to synthesize multiple, potentially flawed, solution attempts "
-            "into a single, correct, and comprehensive final answer.\n\n"
-            "You will be given a problem, followed by several solution attempts.\n"
-            "Solution attempts include confidence scores to help estimate their quality.\n\n"
-            "Carefully review all the provided information. It is possible that any, all, or none "
-            "of the solutions are correct or complete.\n"
-            "Use them as starting points—correcting mistakes, filling in gaps, and/or combining "
-            "useful ideas—to produce your final solution.\n\n"
-            "---\n"
-            "GIVEN THE FOLLOWING PROBLEM:\n{problem}\n\n"
-            "AND THESE SOLUTION ATTEMPTS:\n{solutions}\n\n"
-            "---\n"
-            "Now, provide the final, comprehensive, and correct solution to the problem."
+            "Given the following problem:\n"
+            "{problem}\n"
+            "and these solution attempts with their confidence scores:\n"
+            "{solutions}\n"
+            "It is possible that any, all, or none of these solutions are correct or complete. "
+            "Carefully review the provided solutions, using them as starting points—correcting mistakes, "
+            "filling in gaps, and/or combining useful ideas—to produce a final, comprehensive, "
+            "and correct solution to the problem."
         )
 
     # 데이터 큐레이션 실행

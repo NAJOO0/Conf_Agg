@@ -72,7 +72,7 @@ def format_solutions_for_aggregation(solutions: list, include_confidence: bool =
             f"final_answer: {sol['final_answer']}\n"
         )
         if include_confidence:
-            conf_value = sol["confidence_scores"].get("tail_confidence", None)
+            conf_value = sol["confidence_scores"].get("bottom_10_percent_confidence", None)
             conf_str = f"{conf_value:.4f}" if conf_value is not None else "N/A"
             lines[-1] += f"confidence: {conf_str}\n"
     return "\n".join(lines)
@@ -111,7 +111,7 @@ def prepare_aggregation_prompts_batch(
     include_confidence: bool = True
 ) -> Tuple[List[str], List[str]]:
     """배치 처리를 위한 aggregation 프롬프트 준비
-    
+
     Returns:
         (formatted_prompts, prompt_texts) - formatted_prompts는 토크나이저 적용된 것, prompt_texts는 원본 프롬프트 텍스트
     """
@@ -120,7 +120,7 @@ def prepare_aggregation_prompts_batch(
     for req in aggregation_requests:
         problem_text = req["problem_text"]
         solutions = req["solutions"]
-        
+
         # Solution 텍스트 포맷팅
         solutions_text = format_solutions_for_aggregation(solutions, include_confidence=include_confidence)
         
@@ -335,12 +335,27 @@ def main(cfg: DictConfig) -> None:
     #     "---\n"
     #     "Now, provide the final, comprehensive, and correct solution to the problem."
     # )
-    aggregation_prompt_template = (
-        "Given the following problem:\n{problem}\n"
-        "and these solution attempts:\n{solutions}\n"
-        "It is possible that any, all, or none of these solutions are correct or complete. Carefully review the\n"
-        "provided solutions, using them as starting points—correcting mistakes, filling in gaps, and/or combining\n"
-        "useful ideas—to produce a final, comprehensive, and correct solution to the problem."
+    # Aggregation 프롬프트 템플릿 2가지 정의
+    aggregation_prompt_template_with_conf = (
+        "Given the following problem:\n"
+        "{problem}\n"
+        "and these solution attempts with their confidence scores:\n"
+        "{solutions}\n"
+        "It is possible that any, all, or none of these solutions are correct or complete. "
+        "Carefully review the provided solutions, using them as starting points—correcting mistakes, "
+        "filling in gaps, and/or combining useful ideas—to produce a final, comprehensive, "
+        "and correct solution to the problem."
+    )
+
+    aggregation_prompt_template_without_conf = (
+        "Given the following problem:\n"
+        "{problem}\n"
+        "and these solution attempts:\n"
+        "{solutions}\n"
+        "It is possible that any, all, or none of these solutions are correct or complete. "
+        "Carefully review the provided solutions, using them as starting points—correcting mistakes, "
+        "filling in gaps, and/or combining useful ideas—to produce a final, comprehensive, "
+        "and correct solution to the problem."
     )
     # base_instruction = "Please reason step by step, and put your final answer within \\boxed{}."
     
@@ -695,11 +710,11 @@ def main(cfg: DictConfig) -> None:
                     if aggregation_requests:
                             logger.info(f"총 {len(aggregation_requests)}개 aggregation 요청 준비 완료")
                             
-                            # 배치로 프롬프트 준비 (confidence 포함)
+                            # 배치로 프롬프트 준비 (with confidence)
                             formatted_prompts, prompt_texts = prepare_aggregation_prompts_batch(
                                 baseline_tokenizer,
                                 aggregation_requests,
-                                aggregation_prompt_template,
+                                aggregation_prompt_template_with_conf,
                                 enable_thinking,
                                 include_confidence=True
                             )
@@ -742,11 +757,11 @@ def main(cfg: DictConfig) -> None:
                             # Baseline → Baseline Aggregation (without confidence)
                             logger.info("Baseline → Baseline Aggregation (without confidence) 생성 중...")
                             
-                            # 배치로 프롬프트 준비 (confidence 제외)
+                            # 배치로 프롬프트 준비 (without confidence)
                             formatted_prompts, prompt_texts = prepare_aggregation_prompts_batch(
                                 baseline_tokenizer,
                                 aggregation_requests,
-                                aggregation_prompt_template,
+                                aggregation_prompt_template_without_conf,
                                 enable_thinking,
                                 include_confidence=False
                             )
@@ -1044,11 +1059,11 @@ def main(cfg: DictConfig) -> None:
                         if aggregation_requests:
                             logger.info(f"총 {len(aggregation_requests)}개 aggregation 요청 준비 완료")
                             
-                            # 배치로 프롬프트 준비 (confidence 포함)
+                            # 배치로 프롬프트 준비 (with confidence)
                             formatted_prompts, prompt_texts = prepare_aggregation_prompts_batch(
                                 aggllm_tokenizer,
                                 aggregation_requests,
-                                aggregation_prompt_template,
+                                aggregation_prompt_template_with_conf,
                                 enable_thinking,
                                 include_confidence=True
                             )
@@ -1132,10 +1147,11 @@ def main(cfg: DictConfig) -> None:
                             logger.info(f"총 {len(aggregation_requests)}개 aggregation 요청 준비 완료")
                             
                             # 배치로 프롬프트 준비
+                            # 배치로 프롬프트 준비 (with confidence)
                             formatted_prompts, prompt_texts = prepare_aggregation_prompts_batch(
                                 aggllm_tokenizer,
                                 aggregation_requests,
-                                aggregation_prompt_template,
+                                aggregation_prompt_template_with_conf,
                                 enable_thinking,
                                 include_confidence=True
                             )

@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # GPU 설정 (인자가 없으면 기본값 0,1 사용)
-GPU_IDS=${1:-"0"}
+GPU_IDS=${1:-"1"}
 NUM_GPUS=$(echo $GPU_IDS | tr ',' '\n' | wc -l)
 
 # 기본 로그 디렉토리

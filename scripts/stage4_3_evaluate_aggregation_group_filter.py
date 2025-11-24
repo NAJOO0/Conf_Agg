@@ -25,40 +25,59 @@ from src.utils.logging import setup_logging
 logger = logging.getLogger(__name__)
 
 
-def filter_solutions_by_token_length(
-    solutions: list,
+def filter_groups_by_token_length(
+    solution_groups: List[list],
     tokenizer: AutoTokenizer,
-    max_tokens: int = 2000
-) -> Tuple[list, list]:
+    aggregation_prompt_template: str,
+    problem_text: str,
+    max_tokens: int,
+    enable_thinking: bool,
+    include_confidence: bool = True
+) -> Tuple[List[list], int]:
     """
-    content가 max_tokens 이상인 solution 필터링
-    
+    Group 단위로 aggregation prompt 토큰 수를 체크하여 필터링
+
     Args:
-        solutions: solution 리스트
+        solution_groups: solution group 리스트
         tokenizer: 토크나이저
-        max_tokens: 최대 토큰 수 (기본 2000)
-    
+        aggregation_prompt_template: aggregation prompt 템플릿
+        problem_text: 문제 텍스트
+        max_tokens: 최대 토큰 수
+        enable_thinking: thinking 활성화 여부
+        include_confidence: confidence 포함 여부
+
     Returns:
-        (필터링된 solution 리스트, 토큰 수 리스트)
+        (필터링된 group 리스트, 필터링된 group 수)
     """
-    filtered = []
-    token_counts = []
-    for sol in solutions:
-        content = sol.get("content", "")
-        if not content:
-            continue
-        
-        # 토큰 수 계산
-        tokens = tokenizer.encode(content, add_special_tokens=False)
+    filtered_groups = []
+    filtered_count = 0
+
+    for group in solution_groups:
+        # aggregation prompt 생성
+        solutions_text = format_solutions_for_aggregation(group, include_confidence=include_confidence)
+        prompt = aggregation_prompt_template.format(
+            problem=problem_text,
+            solutions=solutions_text
+        )
+        messages = [{"role": "user", "content": prompt}]
+        formatted_prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=enable_thinking,
+        )
+
+        # 토큰 수 체크
+        tokens = tokenizer.encode(formatted_prompt, add_special_tokens=True)
         token_count = len(tokens)
-        token_counts.append(token_count)
-        
-        if token_count < max_tokens:
-            filtered.append(sol)
+
+        if token_count <= max_tokens:
+            filtered_groups.append(group)
         else:
-            logger.debug(f"Solution 필터링됨: {token_count} 토큰 (최대: {max_tokens})")
-    
-    return filtered, token_counts
+            filtered_count += 1
+            logger.debug(f"Group 필터링됨: {token_count} 토큰 (최대: {max_tokens})")
+
+    return filtered_groups, filtered_count
 
 
 def format_solutions_for_aggregation(solutions: list, include_confidence: bool = True) -> str:
@@ -155,7 +174,7 @@ def count_correct_solutions(solutions: list, ground_truth: str, math_verifier: M
 
 def group_solutions_for_aggregation(
     filtered_solutions: list,
-    target_group_size: int = None,
+    target_group_size: int = 4,
     max_groups: int = None
 ) -> List[list]:
     """
@@ -311,7 +330,7 @@ def main(cfg: DictConfig) -> None:
     # 디렉토리 설정
     results_dir = os.path.join(cfg.paths.output_dir, "comprehensive_results")
     # results_dir = os.path.join(results_dir, "think" if eval_config.get("enable_thinking", False) else "no_think")
-    results_dir = os.path.join(results_dir, "no_think_no_think")
+    results_dir = os.path.join(results_dir, "Qwen_Qwen3-1.7B_think_False_temperature1.0")
     logger.info(f"results_dir: {results_dir}")
     # Math Verifier 초기화
     math_verifier = MathVerifier(
@@ -356,11 +375,10 @@ def main(cfg: DictConfig) -> None:
     checkpoint_num = eval_config.checkpoint_num
     if checkpoint_num is not None:
         # aggllm_model_path = os.path.join(cfg.paths.model_dir,f"enable_think_True_20251117/checkpoint-{checkpoint_num}")
-        aggllm_model_path = os.path.join(cfg.paths.model_dir,f"checkpoint-{checkpoint_num}")
+        aggllm_model_path = os.path.join(cfg.paths.model_dir,f"10pct_naive/checkpoint-{checkpoint_num}")
     else:
         # aggllm_model_path = os.path.join(cfg.paths.model_dir, "enable_think_True_20251117/checkpoint-final")
-        # aggllm_model_path = os.path.join(cfg.paths.model_dir, "checkpoint-final")
-        aggllm_model_path = None
+        aggllm_model_path = os.path.join(cfg.paths.model_dir, "checkpoint-final")
     
     if not os.path.exists(aggllm_model_path):
         logger.warning(f"AggLLM 모델을 찾을 수 없습니다: {aggllm_model_path}")
@@ -664,25 +682,32 @@ def main(cfg: DictConfig) -> None:
                         solutions = problem_data["solutions"]
                         ground_truth = problem_data["ground_truth"]
                         problem_id = problem_data["problem_id"]
-                        
-                        # 전체 16개를 먼저 필터링
-                        filtered_solutions, _ = filter_solutions_by_token_length(
-                            solutions,
-                            baseline_tokenizer,
-                            max_tokens=eval_config.filter_max_tokens
-                        )
-                        
-                        # 그룹화 (group_size개씩, 최대 max_groups개)
+
+                        # 먼저 그룹화 (group_size개씩, 최대 max_groups개)
                         solution_groups = group_solutions_for_aggregation(
-                            filtered_solutions, 
+                            solutions,
                             target_group_size=group_size,
                             max_groups=max_groups
                         )
-                        
+
+                        # Group 단위로 토큰 수 필터링
+                        filtered_groups, filtered_count = filter_groups_by_token_length(
+                            solution_groups,
+                            baseline_tokenizer,
+                            aggregation_prompt_template,
+                            problem_text,
+                            max_tokens=eval_config.filter_max_tokens,
+                            enable_thinking=enable_thinking,
+                            include_confidence=True
+                        )
+
+                        if filtered_count > 0:
+                            logger.info(f"Problem {problem_id}: {filtered_count}개 그룹 필터링됨 (총 {len(solution_groups)}개 중)")
+
                         # 각 그룹에 대해 요청 생성
-                        for group in solution_groups:
+                        for group in filtered_groups:
                             correct_count = count_correct_solutions(group, ground_truth, math_verifier)
-                            group_sizes_str = ",".join(str(len(g)) for g in solution_groups)
+                            group_sizes_str = ",".join(str(len(g)) for g in filtered_groups)
                             
                             aggregation_requests.append({
                                 "problem_id": problem_id,
@@ -1013,25 +1038,32 @@ def main(cfg: DictConfig) -> None:
                             solutions = problem_data["solutions"]
                             ground_truth = problem_data["ground_truth"]
                             problem_id = problem_data["problem_id"]
-                            
-                            # 전체 16개를 먼저 필터링 (baseline tokenizer 사용)
-                            filtered_solutions, _ = filter_solutions_by_token_length(
-                                solutions,
-                                baseline_tokenizer,
-                                max_tokens=eval_config.filter_max_tokens
-                            )
-                            
-                            # 그룹화 (group_size개씩, 최대 max_groups개)
+
+                            # 먼저 그룹화 (group_size개씩, 최대 max_groups개)
                             solution_groups = group_solutions_for_aggregation(
-                                filtered_solutions, 
+                                solutions,
                                 target_group_size=group_size,
                                 max_groups=max_groups
                             )
-                            
+
+                            # Group 단위로 토큰 수 필터링 (baseline tokenizer 사용)
+                            filtered_groups, filtered_count = filter_groups_by_token_length(
+                                solution_groups,
+                                baseline_tokenizer,
+                                aggregation_prompt_template,
+                                problem_text,
+                                max_tokens=eval_config.filter_max_tokens,
+                                enable_thinking=enable_thinking,
+                                include_confidence=True
+                            )
+
+                            if filtered_count > 0:
+                                logger.info(f"Problem {problem_id}: {filtered_count}개 그룹 필터링됨 (총 {len(solution_groups)}개 중)")
+
                             # 각 그룹에 대해 요청 생성
-                            for group in solution_groups:
+                            for group in filtered_groups:
                                 correct_count = count_correct_solutions(group, ground_truth, math_verifier)
-                                group_sizes_str = ",".join(str(len(g)) for g in solution_groups)
+                                group_sizes_str = ",".join(str(len(g)) for g in filtered_groups)
                                 
                                 aggregation_requests.append({
                                     "problem_id": problem_id,
@@ -1100,25 +1132,32 @@ def main(cfg: DictConfig) -> None:
                             solutions = problem_data["solutions"]
                             ground_truth = problem_data["ground_truth"]
                             problem_id = problem_data["problem_id"]
-                            
-                            # 전체 16개를 먼저 필터링
-                            filtered_solutions, _ = filter_solutions_by_token_length(
-                                solutions,
-                                aggllm_tokenizer,
-                                max_tokens=eval_config.filter_max_tokens
-                            )
-                            
-                            # 그룹화 (group_size개씩, 최대 max_groups개)
+
+                            # 먼저 그룹화 (group_size개씩, 최대 max_groups개)
                             solution_groups = group_solutions_for_aggregation(
-                                filtered_solutions, 
+                                solutions,
                                 target_group_size=group_size,
                                 max_groups=max_groups
                             )
-                            
+
+                            # Group 단위로 토큰 수 필터링
+                            filtered_groups, filtered_count = filter_groups_by_token_length(
+                                solution_groups,
+                                aggllm_tokenizer,
+                                aggregation_prompt_template,
+                                problem_text,
+                                max_tokens=eval_config.filter_max_tokens,
+                                enable_thinking=enable_thinking,
+                                include_confidence=True
+                            )
+
+                            if filtered_count > 0:
+                                logger.info(f"Problem {problem_id}: {filtered_count}개 그룹 필터링됨 (총 {len(solution_groups)}개 중)")
+
                             # 각 그룹에 대해 요청 생성
-                            for group in solution_groups:
+                            for group in filtered_groups:
                                 correct_count = count_correct_solutions(group, ground_truth, math_verifier)
-                                group_sizes_str = ",".join(str(len(g)) for g in solution_groups)
+                                group_sizes_str = ",".join(str(len(g)) for g in filtered_groups)
                                 
                                 aggregation_requests.append({
                                     "problem_id": problem_id,
@@ -1336,3 +1375,5 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     main()
+
+

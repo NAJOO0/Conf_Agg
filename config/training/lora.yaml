@@ -12,9 +12,9 @@ lora:
 grpo:
   group_size: 1
   kl_coefficient: 0.0
-  aggregator_temperature: 0.6
-  num_generations: 6  # sequence_length=32768 유지하면서 메모리 절약
-  temperature: 0.6  # 생성 시 temperature
+  aggregator_temperature: 1.5
+  num_generations: 8  # sequence_length=32768 유지하면서 메모리 절약
+  temperature: 1.5  # 생성 시 temperature
   
   # vLLM 설정 (inference 최적화)
   use_vllm: true  # true로 설정하면 generation 속도 2-10배 향상
@@ -27,22 +27,23 @@ grpo:
   vllm_server_port: 8000
 training:
   epochs: 1
-  batch_size: 1  # per_device_train_batch_size (num_generations=2의 배수)
-  gradient_accumulation_steps: 2  # 유효 배치 크기 유지: 2 * 8 = 16 (이전 4*4=16과 동일)
+  batch_size: 8  # per_device_train_batch_size (num_generations=2의 배수)
+  gradient_accumulation_steps: 4  # 유효 배치 크기 유지: 2 * 8 = 16 (이전 4*4=16과 동일)
+  steps_per_generation: 1
   max_prompt_length: 16384  # 원하는 길이 유지
-  max_response_length: 16384  # 원하는 길이 유지
+  max_response_length: 4096  # 원하는 길이 유지
   learning_rate: 5e-6
   lr_scheduler_type: "cosine"  # Learning rate scheduler 타입
   warmup_ratio: 0.1  # warmup 비율 (warmup_steps와 둘 중 하나만 사용)
   # warmup_steps: null  # warmup 스텝 수 (None 대신 null 또는 숫자 사용, 없으면 warmup_ratio 사용)
   save_steps: 100
-  save_total_limit: 50  # 최대 저장할 체크포인트 수
+  save_total_limit: 200  # 최대 저장할 체크포인트 수
   eval_steps: 0
-  logging_steps: 10
+  logging_steps: 1
   seed: 42  # 재현성을 위한 시드
-  max_steps: 1000
   use_wandb: true  # WandB 사용 여부
   enable_think: true
+  model_save_dir: "10pct_baseline"
 optimizer:
   type: "adamw"
   weight_decay: 0.01

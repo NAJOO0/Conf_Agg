@@ -5,6 +5,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 import numpy as np
+import json
 from typing import List, Dict, Any, Optional
 import logging
 
@@ -32,16 +33,23 @@ class CuratedTrainingDataset(Dataset):
     
     def _load_data(self) -> List[Dict[str, Any]]:
         """데이터를 로드합니다."""
+        # 필요한 컬럼만 로드하여 메모리 최적화
+        required_columns = ['prompt', 'problem_text', 'responses', 'confidence_scores', 'ground_truth']
+
         try:
             # PyArrow를 사용하여 nested data 처리
             if HAS_PYARROW:
                 try:
-                    # memory_map=False로 시도 (큰 파일의 경우 더 안정적)
-                    table = pq.read_table(self.data_path, memory_map=False)
+                    # 먼저 전체 schema를 확인하여 존재하는 컬럼만 선택
+                    schema = pq.read_schema(self.data_path)
+                    available_columns = [col for col in required_columns if col in schema.names]
+
+                    # 사용 가능한 컬럼만 읽기 (메모리 최적화)
+                    table = pq.read_table(self.data_path, columns=available_columns, memory_map=False)
                     # types_mapper를 사용하여 Arrow 타입 유지
                     df = table.to_pandas(types_mapper=pd.ArrowDtype)
                 except Exception as e1:
-                    logger.warning(f"PyArrow types_mapper 사용 실패: {e1}, 기본 변환으로 재시도...")
+                    logger.warning(f"PyArrow 컬럼 필터링 실패: {e1}, 기본 변환으로 재시도...")
                     try:
                         # types_mapper 없이 시도
                         table = pq.read_table(self.data_path, memory_map=False)
@@ -51,12 +59,12 @@ class CuratedTrainingDataset(Dataset):
                         df = pd.read_parquet(self.data_path)
             else:
                 df = pd.read_parquet(self.data_path)
-            
+
             # 데이터가 비어있는지 확인
             if len(df) == 0:
                 logger.warning(f"데이터셋이 비어있습니다: {self.data_path}")
                 return []
-            
+
             logger.info(f"데이터 로드 성공: {len(df)}개 샘플")
             return df.to_dict('records')
         except Exception as e:
@@ -68,24 +76,26 @@ class CuratedTrainingDataset(Dataset):
     
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         item = self.data[idx]
-        
+
         # 리스트 형태의 데이터 처리
         if isinstance(item.get('responses'), str):
-            # 문자열로 저장된 경우 파싱
-            import ast
+            # 문자열로 저장된 경우 JSON 파싱 시도
             try:
-                item['responses'] = ast.literal_eval(item['responses'])
-            except:
-                item['responses'] = [item['responses']]
-        
+                item['responses'] = json.loads(item['responses'])
+            except (json.JSONDecodeError, TypeError) as e:
+                # JSON 파싱 실패 시 안전하게 빈 리스트로 설정
+                logger.warning(f"Failed to parse responses at index {idx} as JSON: {e}. Using empty list.")
+                item['responses'] = []
+
         if isinstance(item.get('confidence_scores'), str):
-            # 문자열로 저장된 경우 파싱
-            import ast
+            # 문자열로 저장된 경우 JSON 파싱 시도
             try:
-                item['confidence_scores'] = ast.literal_eval(item['confidence_scores'])
-            except:
-                item['confidence_scores'] = [{}]
-        
+                item['confidence_scores'] = json.loads(item['confidence_scores'])
+            except (json.JSONDecodeError, TypeError) as e:
+                # JSON 파싱 실패 시 안전하게 빈 딕셔너리로 설정
+                logger.warning(f"Failed to parse confidence_scores at index {idx} as JSON: {e}. Using empty dict.")
+                item['confidence_scores'] = {}
+
         return item
 
 

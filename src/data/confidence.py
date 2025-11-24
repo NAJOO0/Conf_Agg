@@ -7,15 +7,21 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Constants
+DEFAULT_GROUP_SIZE = 10
+CONFIDENCE_PERCENTILE_THRESHOLD = 0.1  # 10% for top/bottom percentile calculations
+
 
 class ConfidenceCalculator:
     """신뢰도 점수 계산 클래스"""
-    
-    def __init__(self, group_size: int = 10):
+
+    def __init__(self, group_size: int = DEFAULT_GROUP_SIZE):
         """
         Args:
             group_size: 토큰 그룹 크기
         """
+        if group_size <= 0:
+            raise ValueError(f"group_size must be positive, got {group_size}")
         self.group_size = group_size
     
     def _calculate_group_confidences(self, token_confidences: Union[List[float], np.ndarray]) -> np.ndarray:
@@ -109,11 +115,14 @@ class ConfidenceCalculator:
         group_confidences = np.asarray(group_confidences)
         
         # 하위 10% 그룹 선택: 전체 정렬 대신 partition 사용 (훨씬 빠름)
-        num_bottom_groups = max(1, int(np.ceil(len(group_confidences) * 0.1)))
+        num_bottom_groups = max(1, int(np.ceil(len(group_confidences) * CONFIDENCE_PERCENTILE_THRESHOLD)))
+        # Validate num_bottom_groups doesn't exceed array length
+        if num_bottom_groups > len(group_confidences):
+            num_bottom_groups = len(group_confidences)
         # partition을 사용하여 하위 num_bottom_groups개만 정렬
-        partitioned = np.partition(group_confidences, num_bottom_groups - 1)
+        partitioned = np.partition(group_confidences, min(num_bottom_groups - 1, len(group_confidences) - 1))
         bottom_groups = partitioned[:num_bottom_groups]
-        
+
         return float(np.mean(bottom_groups))
     
     def calculate_lowest_group_confidence(
@@ -173,11 +182,14 @@ class ConfidenceCalculator:
         group_confidences = np.asarray(group_confidences)
         
         # 상위 10% 그룹 선택: 전체 정렬 대신 partition 사용 (훨씬 빠름)
-        num_top_groups = max(1, int(np.ceil(len(group_confidences) * 0.1)))
+        num_top_groups = max(1, int(np.ceil(len(group_confidences) * CONFIDENCE_PERCENTILE_THRESHOLD)))
+        # Validate num_top_groups doesn't exceed array length
+        if num_top_groups > len(group_confidences):
+            num_top_groups = len(group_confidences)
         # partition을 사용하여 상위 num_top_groups개만 정렬
-        partitioned = np.partition(group_confidences, -num_top_groups)
+        partitioned = np.partition(group_confidences, max(-num_top_groups, -len(group_confidences)))
         top_groups = partitioned[-num_top_groups:]
-        
+
         return float(np.mean(top_groups))
 
     def calculate_highest_group_confidence(
@@ -276,19 +288,27 @@ class ConfidenceCalculator:
         return float(np.mean(first_group))
     
     def calculate_all_confidence_scores(
-        self, 
+        self,
         logprobs: List[List[float]]
     ) -> Dict[str, float]:
         """
         모든 신뢰도 점수를 계산합니다.
         최적화: group_confidences를 한 번만 계산하여 모든 함수에 재사용합니다.
-        
+
         Args:
             logprobs: 토큰별 로그 확률 리스트
-        
+
         Returns:
             신뢰도 점수 딕셔너리
         """
+        # Input validation
+        if logprobs is not None and len(logprobs) > 0:
+            # Ensure logprobs is a list of lists, not a flat list
+            if not isinstance(logprobs[0], (list, np.ndarray)):
+                logger.warning(f"logprobs appears to be a flat list, expected list of lists")
+                # Try to handle as token-level logprobs
+                logprobs = [[lp] for lp in logprobs]
+
         # 한 번만 token_confidences와 group_confidences 계산
         if logprobs is None or len(logprobs) == 0:
             token_confidences = np.array([], dtype=np.float32)

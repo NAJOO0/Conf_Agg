@@ -36,5 +36,5 @@ experiment:
   wandb:
     enabled: true
     project: "conf-agg-llm"
-    tags: ["experiment", "math-reasoning", "gpu-4"]
+    tags: ["experiment", "math-reasoning", "gpu-1"]
 

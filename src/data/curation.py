@@ -58,23 +58,43 @@ class DataCurator:
         timeout: int = 30,
         confidence_key: str = "tail_confidence",
         fill_insufficient_with_sampling: bool = True,
-        prompt_template: str = (
-            "Given the following problem:\n{problem}\n"
-            "and these solution attempts:\n{solutions}\n"
-            "It is possible that any, all, or none of these solutions are correct or complete. Carefully review the\n"
-            "provided solutions, using them as starting points—correcting mistakes, filling in gaps, and/or combining\n"
-            "useful ideas—to produce a final, comprehensive, and correct solution to the problem."
-        )
+        tokenizer_model: str = "Qwen/Qwen3-1.7B",
+        easy_threshold: float = 0.5,
+        prompt_template: str = 
+            (
+                "You are an expert mathematician and critical analyst.\n"
+                "Your task is to synthesize multiple, potentially flawed, solution attempts "
+                "into a single, correct, and comprehensive final answer.\n\n"
+                "You will be given a problem, followed by several solution attempts.\n"
+                "Solution attempts include confidence scores to help estimate their quality.\n\n"
+                "Carefully review all the provided information. It is possible that any, all, or none "
+                "of the solutions are correct or complete.\n"
+                "Use them as starting points—correcting mistakes, filling in gaps, and/or combining "
+                "useful ideas—to produce your final solution.\n\n"
+                "---\n"
+                "GIVEN THE FOLLOWING PROBLEM:\n{problem}\n\n"
+                "AND THESE SOLUTION ATTEMPTS:\n{solutions}\n\n"
+                "---\n"
+                "Now, provide the final, comprehensive, and correct solution to the problem."
+            ),
     ):
         """
         Args:
-            strategy: 큐레이션 전략 (naive, curriculum, multitask)
+            strategy: 큐레이션 전략 (naive, curriculum, multitask, baseline)
+                - naive: 기본 전략 (Hard/Easy 비율 조정)
+                - curriculum: set_size를 점진적으로 감소시켜 여러 데이터셋 생성
+                - multitask: 여러 set_size를 하나의 데이터셋에 포함
+                - baseline: confidence 없이 solution만 포함하는 프롬프트 생성
             easy_sample_percentage: Easy 샘플 비율
             num_sets_per_problem: 문제당 세트 수
             set_size: 각 세트의 크기
             timeout: 검증 타임아웃
-            confidence_key: 사용할 컨피던스 키 (default: "bottom_10_percent_confidence")
-            fill_insufficient_with_sampling: 응답이 부족할 때 샘플링으로 채울지 여부 (default: False)
+            confidence_key: 사용할 컨피던스 키 (default: "tail_confidence")
+            fill_insufficient_with_sampling: 응답이 부족할 때 샘플링으로 채울지 여부 (default: True)
+                - True: 중복을 허용하여 필요한 개수만큼 채움 (random.choices)
+                - False: 있는 응답만 사용하여 세트 수가 줄어듦
+            tokenizer_model: 토크나이저 모델 이름 (default: "Qwen/Qwen3-1.7B")
+            easy_threshold: Easy/Hard 분류 임계값 (default: 0.5, 정답률 >= 이 값이면 Easy)
             prompt_template: 프롬프트 템플릿 문자열
         """
         self.strategy = strategy
@@ -84,58 +104,174 @@ class DataCurator:
         self.verifier = MathVerifier(timeout=timeout)
         self.confidence_key = confidence_key
         self.fill_insufficient_with_sampling = fill_insufficient_with_sampling
+        self.easy_threshold = easy_threshold
         self.prompt_template = prompt_template
-        self.tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-1.7B")
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_model)
         # 시드 설정
         random.seed(42)
         np.random.seed(42)
     
     def classify_hard_easy_sets(
-        self, 
-        sets: List[Dict[str, Any]]
+        self,
+        sets: List[Dict[str, Any]],
+        save_distribution: bool = False,
+        output_dir: Optional[str] = None,
+        suffix: str = ""
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         세트 기반 Hard/Easy 분류를 수행합니다.
         각 세트의 정답률을 계산하여 Hard/Easy로 분류합니다.
-        
+
         Args:
             sets: 생성된 세트 리스트
-        
+            save_distribution: 정답 개수 분포를 파일로 저장할지 여부
+            output_dir: 분포 파일을 저장할 디렉토리 (save_distribution=True일 때 필요)
+            suffix: 파일 이름에 추가할 접미사 (예: "_size_4")
+
         Returns:
             (hard_sets, easy_sets) 튜플
         """
         logger.info("세트 기반 Hard/Easy 분류 시작")
-        
+
         hard_sets = []
         easy_sets = []
-        
+
+        # 정답 개수 분포를 추적하기 위한 리스트
+        hard_correct_counts = []
+        easy_correct_counts = []
+
         for set_info in sets:
             ground_truth = set_info['ground_truth']
             solutions = set_info['solutions']
-            
+
             # 세트 내 정답 개수 계산
             correct_count = 0
             for solution in solutions:
                 final_answer = solution.get('final_answer', '')
                 if self.verifier.verify_answer(final_answer, ground_truth):
                     correct_count += 1
-            
+
             # 정답률 계산
             total_count = len(solutions)
             accuracy = correct_count / total_count if total_count > 0 else 0.0
-            
-            # 다수결이 맞으면 Easy, 아니면 Hard
-            # (과반수 이상이 맞으면 Easy로 분류)
-            if accuracy >= 0.5:
+
+            # 정답률이 임계값 이상이면 Easy, 아니면 Hard
+            if accuracy >= self.easy_threshold:
                 easy_sets.append(set_info)
+                easy_correct_counts.append(correct_count)
             else:
                 hard_sets.append(set_info)
-        
+                hard_correct_counts.append(correct_count)
+
         logger.info(f"Hard 세트: {len(hard_sets)}개, Easy 세트: {len(easy_sets)}개")
         logger.info(f"Easy 비율: {len(easy_sets) / len(sets) * 100:.2f}%")
-        
+
+        # 분포 정보 저장
+        if save_distribution and output_dir:
+            self._save_correct_answer_distribution(
+                hard_correct_counts,
+                easy_correct_counts,
+                output_dir,
+                suffix
+            )
+
         return hard_sets, easy_sets
-    
+
+    def _save_correct_answer_distribution(
+        self,
+        hard_correct_counts: List[int],
+        easy_correct_counts: List[int],
+        output_dir: str,
+        suffix: str = ""
+    ):
+        """
+        Hard/Easy 세트의 정답 개수 분포를 분석하고 파일로 저장합니다.
+
+        Args:
+            hard_correct_counts: Hard 세트들의 정답 개수 리스트
+            easy_correct_counts: Easy 세트들의 정답 개수 리스트
+            output_dir: 결과 파일을 저장할 디렉토리
+            suffix: 파일 이름에 추가할 접미사 (예: "_size_4")
+        """
+        logger.info("정답 개수 분포 분석 및 저장 시작")
+
+        # 분포 계산 함수
+        def calculate_distribution(counts: List[int], category: str) -> Dict[str, Any]:
+            if not counts:
+                return {
+                    'category': category,
+                    'total_sets': 0,
+                    'distribution': {},
+                    'statistics': {}
+                }
+
+            # 정답 개수별 빈도 계산
+            count_freq = defaultdict(int)
+            for count in counts:
+                count_freq[count] += 1
+
+            # 정렬된 분포
+            sorted_distribution = dict(sorted(count_freq.items()))
+
+            # 통계 계산
+            counts_array = np.array(counts)
+            statistics = {
+                'mean': float(np.mean(counts_array)),
+                'median': float(np.median(counts_array)),
+                'std': float(np.std(counts_array)),
+                'min': int(np.min(counts_array)),
+                'max': int(np.max(counts_array)),
+                'q25': float(np.percentile(counts_array, 25)),
+                'q75': float(np.percentile(counts_array, 75))
+            }
+
+            return {
+                'category': category,
+                'total_sets': len(counts),
+                'distribution': sorted_distribution,
+                'statistics': statistics
+            }
+
+        # Hard와 Easy 각각의 분포 계산
+        hard_dist = calculate_distribution(hard_correct_counts, 'Hard')
+        easy_dist = calculate_distribution(easy_correct_counts, 'Easy')
+
+        # 결과 딕셔너리 생성
+        result = {
+            'metadata': {
+                'set_size': self.set_size,
+                'easy_threshold': self.easy_threshold,
+                'timestamp': pd.Timestamp.now().isoformat()
+            },
+            'hard': hard_dist,
+            'easy': easy_dist
+        }
+
+        # JSON 파일로 저장 (suffix가 있으면 파일명에 추가)
+        filename = f"correct_answer_distribution{suffix}.json"
+        output_path = os.path.join(output_dir, filename)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"정답 개수 분포 저장 완료: {output_path}")
+
+        # 로그에도 요약 정보 출력
+        logger.info(f"Hard 세트 정답 개수 분포 (총 {hard_dist['total_sets']}개):")
+        if hard_dist['distribution']:
+            for count, freq in hard_dist['distribution'].items():
+                logger.info(f"  정답 {count}개: {freq}개 세트 ({freq/hard_dist['total_sets']*100:.2f}%)")
+            logger.info(f"  평균: {hard_dist['statistics']['mean']:.2f}, "
+                       f"중앙값: {hard_dist['statistics']['median']:.2f}, "
+                       f"표준편차: {hard_dist['statistics']['std']:.2f}")
+
+        logger.info(f"Easy 세트 정답 개수 분포 (총 {easy_dist['total_sets']}개):")
+        if easy_dist['distribution']:
+            for count, freq in easy_dist['distribution'].items():
+                logger.info(f"  정답 {count}개: {freq}개 세트 ({freq/easy_dist['total_sets']*100:.2f}%)")
+            logger.info(f"  평균: {easy_dist['statistics']['mean']:.2f}, "
+                       f"중앙값: {easy_dist['statistics']['median']:.2f}, "
+                       f"표준편차: {easy_dist['statistics']['std']:.2f}")
+
     def _get_majority_answer(self, answers: List[str]) -> str:
         """다수결 투표로 답안을 결정합니다."""
         # 답안별 빈도 계산
@@ -149,7 +285,8 @@ class DataCurator:
     def create_response_sets(
         self, 
         data: pd.DataFrame,
-        num_sets: Optional[int] = None
+        num_sets: Optional[int] = None,
+        shuffle_seed: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
         응답을 세트로 나눕니다.
@@ -157,6 +294,7 @@ class DataCurator:
         Args:
             data: 문제별 응답 데이터
             num_sets: 각 문제당 생성할 세트 수 (None이면 num_sets_per_problem 사용)
+            shuffle_seed: 각 문제별 응답을 shuffle할 때 사용할 seed (None이면 기본 seed 사용)
         
         Returns:
             세트별 데이터 리스트
@@ -175,26 +313,53 @@ class DataCurator:
             # 필요한 총 응답 수 계산
             required_responses = num_sets * self.set_size
             
-            if len(responses) >= required_responses:
-                # 충분한 응답이 있으면 정확히 필요한 만큼만 사용 (랜덤 샘플링)
-                selected_responses = random.sample(responses, required_responses)
-            else:
-                # 응답이 부족한 경우
-                if self.fill_insufficient_with_sampling:
-                    # 샘플링으로 채우기 (중복 허용)
-                    selected_responses = responses.copy()
-                    while len(selected_responses) < required_responses:
-                        selected_responses.append(random.choice(responses))
-                    logger.info(
-                        f"문제 {problem_id}: 응답 {len(responses)}개에서 샘플링으로 {required_responses}개 채움"
-                    )
+            # shuffle_seed가 제공되면 해당 seed로 shuffle 및 샘플링
+            if shuffle_seed is not None:
+                # 문제별로 고유한 seed 생성 (problem_id와 shuffle_seed 조합)
+                problem_seed = hash(str(problem_id) + str(shuffle_seed)) % (2**31)
+                random.seed(problem_seed)
+
+                if len(responses) >= required_responses:
+                    # 충분한 응답이 있으면 중복 없이 샘플링
+                    selected_responses = random.sample(responses, required_responses)
                 else:
-                    # 모두 사용 (이 경우 세트 수가 줄어듦)
-                    selected_responses = responses
-                    logger.warning(
-                        f"문제 {problem_id}: 응답 {len(responses)}개로는 세트 생성에 부족합니다. "
-                        f"필요: {required_responses}개, 세트 수가 {len(responses) // self.set_size}개로 제한됩니다."
-                    )
+                    # 응답이 부족한 경우
+                    if self.fill_insufficient_with_sampling:
+                        # 중복을 허용하여 필요한 개수만큼 채움
+                        selected_responses = random.choices(responses, k=required_responses)
+                        logger.info(
+                            f"문제 {problem_id}: 응답 {len(responses)}개에서 중복 샘플링으로 {required_responses}개 생성"
+                        )
+                    else:
+                        # 있는 만큼만 사용 (세트 수가 줄어듦)
+                        selected_responses = responses
+                        logger.warning(
+                            f"문제 {problem_id}: 응답 {len(responses)}개로는 세트 생성에 부족합니다. "
+                            f"필요: {required_responses}개, 세트 수가 {len(responses) // self.set_size}개로 제한됩니다."
+                        )
+
+                # 전역 seed 복원
+                random.seed(42)
+            else:
+                # shuffle_seed가 없으면 기존 방식 사용
+                if len(responses) >= required_responses:
+                    # 충분한 응답이 있으면 중복 없이 샘플링
+                    selected_responses = random.sample(responses, required_responses)
+                else:
+                    # 응답이 부족한 경우
+                    if self.fill_insufficient_with_sampling:
+                        # 중복을 허용하여 필요한 개수만큼 채움
+                        selected_responses = random.choices(responses, k=required_responses)
+                        logger.info(
+                            f"문제 {problem_id}: 응답 {len(responses)}개에서 중복 샘플링으로 {required_responses}개 생성"
+                        )
+                    else:
+                        # 있는 만큼만 사용 (세트 수가 줄어듦)
+                        selected_responses = responses
+                        logger.warning(
+                            f"문제 {problem_id}: 응답 {len(responses)}개로는 세트 생성에 부족합니다. "
+                            f"필요: {required_responses}개, 세트 수가 {len(responses) // self.set_size}개로 제한됩니다."
+                        )
             
             # 응답을 세트 크기로 나누기
             actual_num_sets = len(selected_responses) // self.set_size
@@ -213,7 +378,14 @@ class DataCurator:
                     # content/final_answer 우선 사용, 없으면 generated_text 백업
                     content = r.get('content') if r.get('content') is not None else r.get('generated_text', '')
                     final_answer = r.get('final_answer') if r.get('final_answer') is not None else ''
+                    # confidence_key 값 가져오기 (없으면 기본값 0.0)
                     conf_val = r.get(self.confidence_key)
+                    if conf_val is None:
+                        logger.warning(
+                            f"confidence_key '{self.confidence_key}' not found in response "
+                            f"for problem {problem_id}, using default value 0.0"
+                        )
+                        conf_val = 0.0
                     solutions.append({
                         'content': content,
                         'final_answer': final_answer,
@@ -224,24 +396,33 @@ class DataCurator:
                     })
                     selected_conf_values.append(conf_val)
                 
-                # 프롬프트용 solutions 텍스트 생성 (confidence 포함)
+                # 프롬프트용 solutions 텍스트 생성 (baseline 전략일 경우 confidence 제외)
                 lines = []
                 for idx, s in enumerate(solutions, start=1):
-                    conf_value = s['confidence']['value']
-                    conf_str = f"{conf_value:.4f}" if conf_value is not None else "N/A"
-                    lines.append(
-                        f"solution{idx}:\n"
-                        f"{s['content']}\n"
-                        f"final_answer: {s['final_answer']}\n"
-                        f"confidence: {conf_str}\n"
-                    )
+                    if self.strategy == "baseline":
+                        # baseline 전략: confidence 없이 solution만 포함
+                        lines.append(
+                            f"solution{idx}:\n"
+                            f"{s['content']}\n"
+                            f"final_answer: {s['final_answer']}\n"
+                        )
+                    else:
+                        # 기존 전략: confidence 포함
+                        conf_value = s['confidence']['value']
+                        conf_str = f"{conf_value:.4f}" if conf_value is not None else "N/A"
+                        lines.append(
+                            f"solution{idx}:\n"
+                            f"{s['content']}\n"
+                            f"final_answer: {s['final_answer']}\n"
+                            f"confidence: {conf_str}\n"
+                        )
                 solutions_text = "\n".join(lines)
                 prompt = self.prompt_template.format(problem=problem_text, solutions=solutions_text)
                 prompt = self.tokenizer.apply_chat_template(
                     [{"role": "user", "content": prompt}],
                     tokenize=False,
                     add_generation_prompt=True,
-                    enable_thinking=True,
+                    enable_thinking=False,
                 )
                 # 세트 정보 생성(호환 필드 유지)
                 set_info = {
@@ -254,7 +435,7 @@ class DataCurator:
                     'selected_confidence_key': self.confidence_key,
                     'selected_confidence': selected_conf_values,
                     # enable_thinking: Stage 3에서 chat template 적용 시 사용
-                    'enable_thinking': True,
+                    'enable_thinking': False,
                     # 기존 파이프라인 호환을 위해 유지
                     'responses': [r.get('generated_text', '') for r in response_set],
                     'confidence_scores': {
@@ -453,31 +634,40 @@ class DataCurator:
             
             logger.info(f"Curriculum 전략: set_size={set_sizes}, set_num={set_num} (통일)")
             
-            for set_size in set_sizes:
+            for idx, set_size in enumerate(set_sizes):
                 logger.info(f"Curriculum 데이터셋 생성: set_size={set_size}, set_num={set_num}")
-                
+
                 # 임시로 set_size 변경 (set_num은 변경하지 않음)
                 original_set_size = self.set_size
                 self.set_size = set_size
-                
-                # 모든 데이터로 응답 세트 생성
-                all_sets = self.create_response_sets(generated_data, num_sets=set_num)
-                
-                # 세트 기반 Hard/Easy 분류
-                hard_sets, easy_sets = self.classify_hard_easy_sets(all_sets)
-                
+
+                # 각 set_size마다 다른 seed로 shuffle하여 서로 다른 solution 선택
+                # set_size를 seed로 사용하여 각 set_size마다 다른 순서로 solution 선택
+                shuffle_seed = set_size * 1000 + idx  # set_size와 인덱스를 조합하여 고유한 seed 생성
+
+                # 모든 데이터로 응답 세트 생성 (shuffle_seed로 서로 다른 solution 선택)
+                all_sets = self.create_response_sets(generated_data, num_sets=set_num, shuffle_seed=shuffle_seed)
+
+                # 세트 기반 Hard/Easy 분류 (분포 저장 활성화)
+                hard_sets, easy_sets = self.classify_hard_easy_sets(
+                    all_sets,
+                    save_distribution=True,
+                    output_dir=output_dir,
+                    suffix=f"_size_{set_size}"
+                )
+
                 # 큐레이션 전략 적용 (기본 전략)
                 curated_sets = self.apply_curation_strategy(hard_sets, easy_sets)
-                
+
                 # 훈련/검증 분할
                 train_sets, validation_sets = self.split_train_validation(curated_sets, train_split)
-                
+
                 # 결과 저장 (중첩 데이터를 JSON으로 직렬화)
                 train_sets_serialized = _serialize_nested_data(train_sets)
                 validation_sets_serialized = _serialize_nested_data(validation_sets)
                 train_df = pd.DataFrame(train_sets_serialized)
                 validation_df = pd.DataFrame(validation_sets_serialized)
-                
+
                 train_path = os.path.join(output_dir, f"train_curated_size_{set_size}.parquet")
                 validation_path = os.path.join(output_dir, f"validation_curated_size_{set_size}.parquet")
                 
@@ -516,29 +706,38 @@ class DataCurator:
             
             original_set_size = self.set_size
             
-            for set_size in set_sizes:
+            for idx, set_size in enumerate(set_sizes):
                 logger.info(f"Multitask 데이터셋 생성 중: set_size={set_size}, set_num={set_num}")
-                
+
                 # 임시로 set_size 변경 (set_num은 변경하지 않음)
                 self.set_size = set_size
-                
-                # 모든 데이터로 응답 세트 생성
-                all_sets = self.create_response_sets(generated_data, num_sets=set_num)
-                
-                # 세트 기반 Hard/Easy 분류
-                hard_sets, easy_sets = self.classify_hard_easy_sets(all_sets)
-                
+
+                # 각 set_size마다 다른 seed로 shuffle하여 서로 다른 solution 선택
+                # set_size를 seed로 사용하여 각 set_size마다 다른 순서로 solution 선택
+                shuffle_seed = set_size * 1000 + idx  # set_size와 인덱스를 조합하여 고유한 seed 생성
+
+                # 모든 데이터로 응답 세트 생성 (shuffle_seed로 서로 다른 solution 선택)
+                all_sets = self.create_response_sets(generated_data, num_sets=set_num, shuffle_seed=shuffle_seed)
+
+                # 세트 기반 Hard/Easy 분류 (분포 저장 활성화)
+                hard_sets, easy_sets = self.classify_hard_easy_sets(
+                    all_sets,
+                    save_distribution=True,
+                    output_dir=output_dir,
+                    suffix=f"_size_{set_size}"
+                )
+
                 # 큐레이션 전략 적용 (기본 전략)
                 curated_sets = self.apply_curation_strategy(hard_sets, easy_sets)
-                
+
                 # 훈련/검증 분할
                 train_sets, validation_sets = self.split_train_validation(curated_sets, train_split)
-                
+
                 # set_size 정보를 각 세트에 추가
                 for train_set in train_sets:
                     train_set['set_size'] = set_size
                     all_train_sets.append(train_set)
-                
+
                 for val_set in validation_sets:
                     val_set['set_size'] = set_size
                     all_validation_sets.append(val_set)
@@ -571,9 +770,13 @@ class DataCurator:
             # 기본 전략
             # 모든 데이터로 응답 세트 생성
             all_sets = self.create_response_sets(generated_data)
-            
-            # 세트 기반 Hard/Easy 분류
-            hard_sets, easy_sets = self.classify_hard_easy_sets(all_sets)
+
+            # 세트 기반 Hard/Easy 분류 (분포 저장 활성화)
+            hard_sets, easy_sets = self.classify_hard_easy_sets(
+                all_sets,
+                save_distribution=True,
+                output_dir=output_dir
+            )
             
             # 큐레이션 전략 적용
             curated_sets = self.apply_curation_strategy(hard_sets, easy_sets)

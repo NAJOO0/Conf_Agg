@@ -18,7 +18,6 @@ import asyncio
 import aiofiles
 import json
 from datetime import datetime
-import re
 
 # 프로젝트 루트를 Python 경로에 추가
 sys.path.append(str(Path(__file__).parent.parent))
@@ -30,12 +29,6 @@ from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams
 from vllm.outputs import RequestOutput
 
 logger = logging.getLogger(__name__)
-
-
-def has_final_answer(text: str) -> bool:
-    """생성된 텍스트에 final_answer가 있는지 확인 (\\boxed{} 패턴)"""
-    pattern = r'\\boxed\{[^}]+\}'
-    return bool(re.search(pattern, text))
 
 
 def simple_extract_topk(gen_logprobs: List[Dict[int, Any]], k: int) -> List[List[float]]:
@@ -73,46 +66,28 @@ def process_single_output(
     response_idx: int,
     confidence_calculator: ConfidenceCalculator,
     gen_cfg_logprobs: int,
-    max_tokens: int,
     args: argparse.Namespace
-) -> tuple[Dict, bool]:
-    """
-    단일 출력을 처리하여 결과 딕셔너리 반환
-
-    Returns:
-        tuple[Dict, bool]: (결과 딕셔너리, 성공 여부)
-            - 성공: final_answer가 있거나 max_tokens에 도달하지 않음
-            - 실패: max_tokens에 도달했지만 final_answer가 없음
-    """
-
+) -> Dict:
+    """단일 출력을 처리하여 결과 딕셔너리 반환"""
+    
     # 최적화된 logprob 추출
     topk = simple_extract_topk(completion.logprobs, gen_cfg_logprobs)
-
+    
     # 신뢰도 계산
     confidence_scores = confidence_calculator.calculate_all_confidence_scores(topk)
-
-    generated_text = completion.text
-    output_token_count = len(completion.token_ids) if hasattr(completion, "token_ids") else 0
-
-    # 실패 케이스: max_tokens 도달 + final_answer 없음
-    is_success = True
-    if output_token_count >= max_tokens and not has_final_answer(generated_text):
-        is_success = False
-
-    # logprobs는 저장하지 않음 (confidence 계산 후 제거)
-    result = {
+    
+    return {
         "problem_id": problem_meta["problem_id"],
         "problem_text": problem_meta["problem_text"],
         "ground_truth": problem_meta["ground_truth"],
         "response_id": f"{problem_meta['problem_id']}_resp_{response_idx}",
-        "generated_text": generated_text,
-        "output_token_count": output_token_count,
+        "generated_text": completion.text,
+        "output_token_count": len(completion.token_ids) if hasattr(completion, "token_ids") else 0,
+        # "logprobs": topk,
         "worker_gpu": args.gpu_id,
         "worker_replica": f"shard_{args.shard_id}",
         **confidence_scores,
     }
-
-    return result, is_success
 
 
 async def async_generation_worker(cfg: DictConfig, args: argparse.Namespace):
@@ -175,48 +150,27 @@ async def async_generation_worker(cfg: DictConfig, args: argparse.Namespace):
         # 디렉토리 생성
         output_dir = os.path.join(cfg.paths.data_dir, "generated")
         sample_limit_env = os.environ.get("SAMPLE_LIMIT", "")
-        sample_offset_env = os.environ.get("SAMPLE_OFFSET", "")
-
         if sample_limit_env:
-            if sample_offset_env:
-                output_dir = os.path.join(output_dir, f"sample_{sample_limit_env}_offset_{sample_offset_env}")
-            else:
-                output_dir = os.path.join(output_dir, f"sample_{sample_limit_env}")
+            output_dir = os.path.join(output_dir, f"sample_{sample_limit_env}")
         os.makedirs(output_dir, exist_ok=True)
-
+        
         # 원본 데이터셋 로드
         raw_data_path = os.path.join(cfg.paths.data_dir, "raw", "deepscaler.jsonl")
         if not os.path.exists(raw_data_path):
             logger.error(f"원본 데이터 파일을 찾을 수 없습니다: {raw_data_path}")
             return
-
+        
         raw_dataset = RawDataset(raw_data_path)
         logger.info(f"전체 원본 데이터셋 로드 완료: {len(raw_dataset)}개 문제")
-
-        # 샘플 수 제한 및 오프셋
+        
+        # 샘플 수 제한
         sample_limit = int(sample_limit_env) if sample_limit_env and sample_limit_env.isdigit() else 0
-        sample_offset = int(sample_offset_env) if sample_offset_env and sample_offset_env.isdigit() else 0
-
-        if sample_limit > 0:
-            # 전체 인덱스를 한 번 셔플 (seed 42 고정)
+        
+        if sample_limit > 0 and sample_limit < len(raw_dataset):
             np.random.seed(42)
-            all_shuffled_indices = np.random.permutation(len(raw_dataset))
-
-            # offset부터 sample_limit개만큼 선택
-            start_idx = sample_offset
-            end_idx = min(sample_offset + sample_limit, len(raw_dataset))
-
-            if start_idx >= len(raw_dataset):
-                logger.error(f"SAMPLE_OFFSET ({sample_offset})이 데이터셋 크기 ({len(raw_dataset)})를 초과합니다.")
-                return
-
-            selected_indices = sorted(all_shuffled_indices[start_idx:end_idx].tolist())
-            actual_samples = len(selected_indices)
-
-            if sample_offset > 0:
-                logger.info(f"SAMPLE_LIMIT & OFFSET 적용: 전체 {len(raw_dataset)}개 중 [{sample_offset}:{end_idx}] {actual_samples}개 문제 선택 (seed=42)")
-            else:
-                logger.info(f"SAMPLE_LIMIT 적용: 전체 {len(raw_dataset)}개 중 [0:{end_idx}] {actual_samples}개 문제 선택 (seed=42)")
+            selected_indices = np.random.choice(len(raw_dataset), size=sample_limit, replace=False)
+            selected_indices = sorted(selected_indices)
+            logger.info(f"SAMPLE_LIMIT 적용: 전체 {len(raw_dataset)}개 중 랜덤으로 {sample_limit}개 문제 선택")
         else:
             selected_indices = list(range(len(raw_dataset)))
             logger.info(f"전체 데이터셋 사용: {len(raw_dataset)}개 문제")
@@ -262,11 +216,10 @@ async def async_generation_worker(cfg: DictConfig, args: argparse.Namespace):
         gen_cfg = cfg.data.raw_dataset.generation
         num_responses_per_problem = gen_cfg.num_responses_per_problem
 
-        # n=1로 고정하여 각 요청이 1개의 응답만 생성
-        # 같은 문제의 응답들을 연속으로 제출하므로 prefix caching 자동 작동!
-        # GPU 활용률도 최대 (40개 동시 처리)
+        # n=1로 고정하여 각 요청이 1개의 응답만 생성하도록 설정
+        # 대신 코드에서 문제당 num_responses_per_problem번 호출
         sampling_params = SamplingParams(
-            n=1,
+            n=1,  # 고정
             temperature=gen_cfg.temperature,
             top_p=gen_cfg.top_p,
             top_k=gen_cfg.top_k,
@@ -276,7 +229,6 @@ async def async_generation_worker(cfg: DictConfig, args: argparse.Namespace):
             presence_penalty=gen_cfg.presence_penalty,
         )
         gen_cfg_logprobs = gen_cfg.logprobs
-        max_tokens = gen_cfg.max_tokens
         
         # 출력 파일 경로
         temp_jsonl_path = os.path.join(output_dir, f"raw_generated_shard_{args.shard_id}_temp.jsonl")
@@ -308,7 +260,6 @@ async def async_generation_worker(cfg: DictConfig, args: argparse.Namespace):
                     text = my_texts[i]
 
                     # 각 문제마다 num_responses_per_problem번 요청 생성
-                    # 같은 문제의 응답들이 연속으로 제출되어 prefix caching 효율적
                     for resp_idx in range(num_responses_per_problem):
                         request_id = f"shard_{args.shard_id}_problem_{i}_resp_{resp_idx}"
                         yield (request_id, text, problem, i, resp_idx)
@@ -316,10 +267,9 @@ async def async_generation_worker(cfg: DictConfig, args: argparse.Namespace):
             # 동시 처리 중인 요청 추적
             pending_requests = {}
             results_buffer = []
-            # async_settings에서 읽기 (없으면 기본값)
-            async_cfg = cfg.data.raw_dataset.get("async_settings", {})
-            max_pending = async_cfg.get("max_pending_requests", 100)  # 최대 동시 요청 수
-            buffer_size = async_cfg.get("buffer_size", 200)  # 버퍼 크기
+            buffer_size = cfg.data.raw_dataset.get("buffer_size", 10)  # 버퍼 크기
+            save_interval = cfg.data.raw_dataset.get("save_interval", 100)  # N개 배치마다 저장
+            max_pending = cfg.data.raw_dataset.get("max_pending_requests", 10)  # 최대 동시 요청 수
             
             processed_count = 0
             total_saved = 0
@@ -350,23 +300,17 @@ async def async_generation_worker(cfg: DictConfig, args: argparse.Namespace):
                     # 진행 상황 로그
                     if len(pending_requests) % 100 == 0:
                         logger.info(f"[Shard {args.shard_id}] {len(pending_requests)}개 요청 제출됨")
-                
+
                 logger.info(f"[Shard {args.shard_id}] 모든 요청 제출 완료")
             
             # 결과 수집 태스크
             async def collect_results():
-                """결과를 수집하고 즉시 저장 (재시도 로직 포함)"""
+                """결과를 수집하고 즉시 저장"""
                 nonlocal processed_count, total_saved, last_checkpoint_time
 
-                async_cfg = cfg.data.raw_dataset.get("async_settings", {})
-                max_tries = async_cfg.get("max_retries", 2)
-                request_timeout = async_cfg.get("request_timeout", 720)  # 12분 기본값
                 # 전체 요청 수 = 문제 수 × 응답 수
                 total_requests = (len(my_texts) - start_idx) * num_responses_per_problem
                 pbar = tqdm(total=total_requests, desc=f"Shard {args.shard_id}", position=args.shard_id)
-
-                # 재시도 통계
-                retry_stats = {"total_retries": 0, "max_retries_exceeded": 0, "timeouts": 0}
 
                 while pending_requests or not submit_task.done():
                     if not pending_requests:
@@ -375,15 +319,11 @@ async def async_generation_worker(cfg: DictConfig, args: argparse.Namespace):
 
                     # 완료된 요청 처리
                     completed = []
-                    retry_requests = []  # (problem, idx, resp_idx, retry_count)
 
                     for request_id, req_data in list(pending_requests.items()):
                         try:
-                            # 결과 가져오기 (타임아웃 적용)
-                            output = await asyncio.wait_for(
-                                anext(req_data['generator']),
-                                timeout=request_timeout
-                            )
+                            # 결과 가져오기 (논블로킹)
+                            output = await anext(req_data['generator'])
 
                             if output is not None and output.finished:
                                 # 응답 처리 (n=1이므로 output.outputs는 1개만 있음)
@@ -391,117 +331,58 @@ async def async_generation_worker(cfg: DictConfig, args: argparse.Namespace):
                                 response_idx = req_data['response_idx']
                                 completion = output.outputs[0]
 
-                                result, is_success = process_single_output(
+                                result = process_single_output(
                                     problem,
                                     completion,
                                     response_idx,
                                     confidence_calculator,
                                     gen_cfg_logprobs,
-                                    max_tokens,
                                     args
                                 )
+                                results_buffer.append(result)
 
-                                if is_success:
-                                    # 성공
-                                    results_buffer.append(result)
-                                    completed.append(request_id)
-                                    processed_count += 1
-                                    processed_problems.add(problem['problem_id'])
-                                    pbar.update(1)
-
-                                    # 버퍼가 차면 저장
-                                    if len(results_buffer) >= buffer_size:
-                                        for r in results_buffer:
-                                            await f.write(json.dumps(r) + '\n')
-                                        await f.flush()
-                                        total_saved += len(results_buffer)
-                                        logger.info(f"[Shard {args.shard_id}] {total_saved}개 결과 저장 완료 ({processed_count}/{total_requests}개 요청 처리, {len(processed_problems)}개 문제 완료)")
-                                        results_buffer.clear()
-
-                                    # 체크포인트 저장 (1분마다)
-                                    if (datetime.now() - last_checkpoint_time).total_seconds() > 60:
-                                        checkpoint = {
-                                            'last_index': req_data['index'],
-                                            'processed_problems': list(processed_problems),
-                                            'timestamp': datetime.now().isoformat(),
-                                            'retry_stats': retry_stats
-                                        }
-                                        async with aiofiles.open(checkpoint_path, 'w') as ckpt_f:
-                                            await ckpt_f.write(json.dumps(checkpoint))
-                                        last_checkpoint_time = datetime.now()
-                                        logger.info(f"[Shard {args.shard_id}] 체크포인트 저장")
-                                else:
-                                    # 실패 - 재시도
-                                    retry_count = req_data.get('retry_count', 0)
-                                    if retry_count < max_tries:
-                                        retry_requests.append((problem, req_data['index'], response_idx, retry_count + 1))
-                                        retry_stats["total_retries"] += 1
-                                        logger.warning(f"[Shard {args.shard_id}] 재시도 {retry_count + 1}/{max_tries}: {request_id} (max_tokens 도달 + final_answer 없음)")
-                                    else:
-                                        retry_stats["max_retries_exceeded"] += 1
-                                        logger.error(f"[Shard {args.shard_id}] 최대 재시도 횟수 초과: {request_id}")
-                                    completed.append(request_id)
-
+                                completed.append(request_id)
+                                processed_count += 1
+                                processed_problems.add(problem['problem_id'])
+                                pbar.update(1)
+                                
+                                # 버퍼가 차면 저장
+                                if len(results_buffer) >= buffer_size:
+                                    for r in results_buffer:
+                                        await f.write(json.dumps(r) + '\n')
+                                    await f.flush()
+                                    total_saved += len(results_buffer)
+                                    logger.info(f"[Shard {args.shard_id}] {total_saved}개 결과 저장 완료 ({processed_count}/{total_requests}개 요청 처리, {len(processed_problems)}개 문제 완료)")
+                                    results_buffer.clear()
+                                
+                                # 체크포인트 저장 (1분마다)
+                                if (datetime.now() - last_checkpoint_time).seconds > 60:
+                                    checkpoint = {
+                                        'last_index': req_data['index'],
+                                        'processed_problems': list(processed_problems),
+                                        'timestamp': datetime.now().isoformat()
+                                    }
+                                    async with aiofiles.open(checkpoint_path, 'w') as ckpt_f:
+                                        await ckpt_f.write(json.dumps(checkpoint))
+                                    last_checkpoint_time = datetime.now()
+                                    logger.info(f"[Shard {args.shard_id}] 체크포인트 저장")
+                                
                         except StopAsyncIteration:
                             # 생성 완료
                             completed.append(request_id)
-                        except asyncio.TimeoutError:
-                            # 타임아웃 - 재시도
-                            retry_count = req_data.get('retry_count', 0)
-                            retry_stats["timeouts"] += 1
-                            if retry_count < max_tries:
-                                retry_requests.append((req_data['problem'], req_data['index'], req_data['response_idx'], retry_count + 1))
-                                retry_stats["total_retries"] += 1
-                                logger.warning(f"[Shard {args.shard_id}] 타임아웃 ({request_timeout}초) 재시도 {retry_count + 1}/{max_tries}: {request_id}")
-                            else:
-                                retry_stats["max_retries_exceeded"] += 1
-                                logger.error(f"[Shard {args.shard_id}] 타임아웃 최대 재시도 횟수 초과: {request_id}")
-                            completed.append(request_id)
                         except Exception as e:
                             logger.error(f"[Shard {args.shard_id}] 요청 {request_id} 처리 중 오류: {e}")
-                            # Exception도 재시도
-                            retry_count = req_data.get('retry_count', 0)
-                            if retry_count < max_tries:
-                                retry_requests.append((req_data['problem'], req_data['index'], req_data['response_idx'], retry_count + 1))
-                                retry_stats["total_retries"] += 1
-                                logger.warning(f"[Shard {args.shard_id}] Exception 재시도 {retry_count + 1}/{max_tries}: {request_id}")
-                            else:
-                                retry_stats["max_retries_exceeded"] += 1
-                                logger.error(f"[Shard {args.shard_id}] Exception 최대 재시도 횟수 초과: {request_id}")
                             completed.append(request_id)
-
+                    
                     # 완료된 요청 제거
                     for req_id in completed:
                         del pending_requests[req_id]
-
-                    # 재시도 요청 제출
-                    for problem, idx, resp_idx, retry_count in retry_requests:
-                        request_id = f"shard_{args.shard_id}_problem_{idx}_resp_{resp_idx}_retry_{retry_count}"
-                        text = my_texts[idx]
-
-                        # 엔진에 재시도 요청 제출
-                        results_generator = engine.generate(
-                            prompt=text,
-                            sampling_params=sampling_params,
-                            request_id=request_id
-                        )
-
-                        pending_requests[request_id] = {
-                            'generator': results_generator,
-                            'problem': problem,
-                            'index': idx,
-                            'response_idx': resp_idx,
-                            'retry_count': retry_count
-                        }
-
+                    
                     # CPU 양보
                     await asyncio.sleep(0.01)
-
+                
                 pbar.close()
-
-                # 재시도 통계 출력
-                logger.info(f"[Shard {args.shard_id}] 재시도 통계: 총 재시도 {retry_stats['total_retries']}회 (타임아웃 {retry_stats['timeouts']}회), 최대 재시도 초과 {retry_stats['max_retries_exceeded']}개")
-
+                
                 # 마지막 버퍼 처리
                 if results_buffer:
                     for r in results_buffer:

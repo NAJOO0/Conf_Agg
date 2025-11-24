@@ -1,15 +1,16 @@
 # @package data.curation
-strategy: "naive"  # naive, curriculum, multitask
-easy_sample_percentage: 50
-num_sets_per_problem: 3
+strategy: "baseline"  # baseline, naive, curriculum, multitask 
+easy_sample_percentage: 35
+num_sets_per_problem: 8
 set_size: 8
+fill_insufficient_with_sampling: true
 
 verification:
   library: "math_verify"
   timeout: 30
   
 output:
-  train_split: 0.9
-  validation_split: 0.1
+  train_split: 1.0
+  validation_split: 0.0
   format: "parquet"
 

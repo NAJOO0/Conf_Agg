@@ -2288,6 +2288,188 @@ def analyze_instance_level_distributions(df: pd.DataFrame, output_dir: str = Non
     return analysis_results
 
 
+def analyze_correct_answer_distribution_per_instance(df: pd.DataFrame, output_dir: str = None) -> None:
+    """
+    Instance별 정답 개수 분포 분석 및 시각화
+    각 instance에서 전체 inference 중 정답인 경우가 몇 개인지의 분포를 분석합니다.
+
+    Args:
+        df: 데이터프레임
+        output_dir: 출력 디렉토리 (기본값: 스크립트 디렉토리)
+    """
+    if output_dir is None:
+        output_dir = os.path.dirname(os.path.abspath(__file__))
+
+    logger.info("\n" + "="*50)
+    logger.info("=== Instance별 정답 개수 분포 분석 ===")
+    logger.info("="*50)
+
+    if 'problem_id' not in df.columns:
+        logger.error("problem_id 컬럼이 없습니다.")
+        return
+
+    # 정답 컬럼 확인 (MathVerifier 우선)
+    if 'is_correct_math_verifier' in df.columns:
+        correct_col = 'is_correct_math_verifier'
+    elif 'is_correct' in df.columns:
+        correct_col = 'is_correct'
+    else:
+        logger.error("정답 컬럼(is_correct 또는 is_correct_math_verifier)이 없습니다.")
+        return
+
+    logger.info(f"사용하는 정답 컬럼: {correct_col}")
+
+    # Instance별 정답 개수 계산
+    correct_counts_per_instance = []
+    total_inferences_per_instance = []
+
+    for problem_id, group in df.groupby('problem_id'):
+        # 전체 inference 수
+        total_inferences = len(group)
+        total_inferences_per_instance.append(total_inferences)
+
+        # 정답인 inference 수
+        correct_count = group[correct_col].astype(int).sum()
+        correct_counts_per_instance.append(correct_count)
+
+    correct_counts_array = np.array(correct_counts_per_instance)
+    total_inferences_array = np.array(total_inferences_per_instance)
+
+    # 기본 통계
+    logger.info(f"\n=== 기본 통계 ===")
+    logger.info(f"총 instance 수: {len(correct_counts_array)}")
+    logger.info(f"Instance당 평균 정답 개수: {correct_counts_array.mean():.2f}")
+    logger.info(f"Instance당 중앙값 정답 개수: {np.median(correct_counts_array):.2f}")
+    logger.info(f"Instance당 표준편차: {correct_counts_array.std():.2f}")
+    logger.info(f"Instance당 최소 정답 개수: {correct_counts_array.min()}")
+    logger.info(f"Instance당 최대 정답 개수: {correct_counts_array.max()}")
+
+    # Instance당 평균 inference 수
+    logger.info(f"\nInstance당 평균 inference 수: {total_inferences_array.mean():.2f}")
+    logger.info(f"Instance당 중앙값 inference 수: {np.median(total_inferences_array):.2f}")
+
+    # 정답 비율 계산
+    accuracy_per_instance = correct_counts_array / total_inferences_array
+    logger.info(f"\nInstance당 평균 정답률: {accuracy_per_instance.mean():.3f} ({accuracy_per_instance.mean()*100:.1f}%)")
+
+    # 분위수 출력
+    percentiles = [0, 10, 25, 50, 75, 90, 95, 100]
+    logger.info(f"\n=== 정답 개수 분위수 ===")
+    for p in percentiles:
+        logger.info(f"  {p}%: {np.percentile(correct_counts_array, p):.0f}개")
+
+    # 정답 개수별 instance 분포
+    unique_counts = np.unique(correct_counts_array)
+    logger.info(f"\n=== 정답 개수별 Instance 분포 ===")
+    logger.info(f"서로 다른 정답 개수 종류: {len(unique_counts)}가지")
+
+    # 상위 10개만 출력
+    count_distribution = {}
+    for count in unique_counts:
+        instance_count = (correct_counts_array == count).sum()
+        count_distribution[count] = instance_count
+
+    # 내림차순 정렬
+    sorted_counts = sorted(count_distribution.items(), key=lambda x: x[1], reverse=True)
+    logger.info(f"\n정답 개수별 분포 (상위 10개):")
+    for i, (correct_count, instance_count) in enumerate(sorted_counts[:10]):
+        percentage = instance_count / len(correct_counts_array) * 100
+        logger.info(f"  정답 {correct_count}개: {instance_count}개 instance ({percentage:.1f}%)")
+
+    # 정답이 0개인 instance 분석
+    zero_correct_instances = (correct_counts_array == 0).sum()
+    zero_percentage = zero_correct_instances / len(correct_counts_array) * 100
+    logger.info(f"\n정답이 0개인 instance: {zero_correct_instances}개 ({zero_percentage:.1f}%)")
+
+    # 모든 inference가 정답인 instance 분석
+    all_correct_instances = (correct_counts_array == total_inferences_array).sum()
+    all_percentage = all_correct_instances / len(correct_counts_array) * 100
+    logger.info(f"모든 inference가 정답인 instance: {all_correct_instances}개 ({all_percentage:.1f}%)")
+
+    # 시각화 1: 정답 개수 히스토그램
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+    # 1-1: 정답 개수 분포 (전체)
+    ax1 = axes[0, 0]
+    bins = np.arange(0, correct_counts_array.max() + 2) - 0.5
+    ax1.hist(correct_counts_array, bins=bins, edgecolor='black', alpha=0.7, color='steelblue')
+    ax1.axvline(correct_counts_array.mean(), color='red', linestyle='--', linewidth=2,
+               label=f'Mean: {correct_counts_array.mean():.2f}')
+    ax1.axvline(np.median(correct_counts_array), color='orange', linestyle='--', linewidth=2,
+               label=f'Median: {np.median(correct_counts_array):.0f}')
+    ax1.set_xlabel('Number of Correct Inferences per Instance', fontsize=12)
+    ax1.set_ylabel('Number of Instances', fontsize=12)
+    ax1.set_title('Distribution of Correct Answers per Instance', fontsize=14)
+    ax1.legend(loc='best')
+    ax1.grid(True, alpha=0.3)
+
+    # 1-2: 정답 비율 분포
+    ax2 = axes[0, 1]
+    ax2.hist(accuracy_per_instance, bins=50, edgecolor='black', alpha=0.7, color='green')
+    ax2.axvline(accuracy_per_instance.mean(), color='red', linestyle='--', linewidth=2,
+               label=f'Mean: {accuracy_per_instance.mean():.3f}')
+    ax2.axvline(np.median(accuracy_per_instance), color='orange', linestyle='--', linewidth=2,
+               label=f'Median: {np.median(accuracy_per_instance):.3f}')
+    ax2.set_xlabel('Accuracy per Instance (Correct / Total)', fontsize=12)
+    ax2.set_ylabel('Number of Instances', fontsize=12)
+    ax2.set_title('Distribution of Accuracy per Instance', fontsize=14)
+    ax2.legend(loc='best')
+    ax2.grid(True, alpha=0.3)
+
+    # 1-3: 정답 개수 vs Total Inference 수 산점도
+    ax3 = axes[1, 0]
+    scatter = ax3.scatter(total_inferences_array, correct_counts_array, alpha=0.5, s=30, c=accuracy_per_instance,
+                         cmap='RdYlGn', edgecolors='black', linewidth=0.5)
+    # y=x 대각선 (모든 inference가 정답인 경우)
+    max_val = max(total_inferences_array.max(), correct_counts_array.max())
+    ax3.plot([0, max_val], [0, max_val], 'r--', linewidth=2, alpha=0.5, label='All Correct')
+    ax3.set_xlabel('Total Number of Inferences', fontsize=12)
+    ax3.set_ylabel('Number of Correct Inferences', fontsize=12)
+    ax3.set_title('Correct Inferences vs Total Inferences', fontsize=14)
+    ax3.legend(loc='best')
+    ax3.grid(True, alpha=0.3)
+
+    # 컬러바 추가
+    cbar = plt.colorbar(scatter, ax=ax3)
+    cbar.set_label('Accuracy', fontsize=10)
+
+    # 1-4: 정답 개수 상위 20개 막대 그래프
+    ax4 = axes[1, 1]
+    top_20_counts = sorted_counts[:20]
+    if len(top_20_counts) > 0:
+        x_labels = [f'{count}' for count, _ in top_20_counts]
+        y_values = [instance_count for _, instance_count in top_20_counts]
+        colors = plt.cm.viridis(np.linspace(0, 1, len(top_20_counts)))
+
+        bars = ax4.bar(range(len(top_20_counts)), y_values, color=colors, edgecolor='black', alpha=0.8)
+        ax4.set_xticks(range(len(top_20_counts)))
+        ax4.set_xticklabels(x_labels, rotation=45, ha='right')
+        ax4.set_xlabel('Number of Correct Inferences', fontsize=12)
+        ax4.set_ylabel('Number of Instances', fontsize=12)
+        ax4.set_title('Top 20 Most Frequent Correct Answer Counts', fontsize=14)
+        ax4.grid(True, alpha=0.3, axis='y')
+
+        # 각 막대 위에 값 표시
+        for i, (bar, val) in enumerate(zip(bars, y_values)):
+            height = bar.get_height()
+            ax4.text(bar.get_x() + bar.get_width()/2., height,
+                    f'{val}',
+                    ha='center', va='bottom', fontsize=8)
+
+    plt.tight_layout()
+
+    # 저장
+    plot_filename = 'correct_answer_distribution_per_instance.png'
+    plot_path = os.path.join(output_dir, plot_filename)
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    logger.info(f"\n시각화 저장: {plot_path}")
+
+    logger.info("\n" + "="*50)
+    logger.info("✅ Instance별 정답 개수 분포 분석 완료")
+    logger.info("="*50)
+
+
 def analyze_single_file(file_path: str, output_dir: str = None) -> None:
     """
     단일 Parquet 파일 분석 (병합 없이)
@@ -2344,10 +2526,13 @@ def analyze_single_file(file_path: str, output_dir: str = None) -> None:
         
         # # 5.1 total token 구간별 정답률 분석
         analyze_accuracy_by_total_tokens(df, output_dir)
-        
+
+        # 5.2 Instance별 정답 개수 분포 분석
+        analyze_correct_answer_distribution_per_instance(df, output_dir)
+
         # # 6. </think> 이후 토큰 수 분석
-        # post_redaction_tokens = extract_post_redaction_tokens(df)
-        # analyze_post_redaction_tokens(post_redaction_tokens, output_dir)
+        post_redaction_tokens = extract_post_redaction_tokens(df)
+        analyze_post_redaction_tokens(post_redaction_tokens, output_dir)
         
         # # 7. Instance별 분포 분석
         # analyze_instance_level_distributions(df, output_dir)

@@ -38,13 +38,40 @@ def main(cfg: DictConfig) -> None:
     os.makedirs(os.path.join(cfg.paths.data_dir, "curated"), exist_ok=True)
     
     # 입력 파일 경로
-    generated_data_path = os.path.join(cfg.paths.data_dir, "generated", "dataset_train.parquet")
+    generated_data_path = os.path.join(cfg.paths.data_dir, "generated", "dataset_tarin_cleaned_sampled_10pct.parquet")
     
     if not os.path.exists(generated_data_path):
         logger.error(f"Stage 1 결과 파일을 찾을 수 없습니다: {generated_data_path}")
         logger.error("먼저 Stage 1을 실행해주세요: python scripts/stage1_generate.py")
         return
     
+    # baseline 전략인 경우 별도의 프롬프트 템플릿 사용
+    if cfg.data.curation.strategy == "baseline":
+        default_prompt_template = (
+            "Given the following problem:\n{problem}\n"
+            "and these solution attempts:\n{solutions}\n"
+            "It is possible that any, all, or none of these solutions are correct or complete. Carefully review the\n"
+            "provided solutions, using them as starting points—correcting mistakes, filling in gaps, and/or combining\n"
+            "useful ideas—to produce a final, comprehensive, and correct solution to the problem."
+        )
+    else:
+        default_prompt_template = (
+            "You are an expert mathematician and critical analyst.\n"
+            "Your task is to synthesize multiple, potentially flawed, solution attempts "
+            "into a single, correct, and comprehensive final answer.\n\n"
+            "You will be given a problem, followed by several solution attempts.\n"
+            "Solution attempts include confidence scores to help estimate their quality.\n\n"
+            "Carefully review all the provided information. It is possible that any, all, or none "
+            "of the solutions are correct or complete.\n"
+            "Use them as starting points—correcting mistakes, filling in gaps, and/or combining "
+            "useful ideas—to produce your final solution.\n\n"
+            "---\n"
+            "GIVEN THE FOLLOWING PROBLEM:\n{problem}\n\n"
+            "AND THESE SOLUTION ATTEMPTS:\n{solutions}\n\n"
+            "---\n"
+            "Now, provide the final, comprehensive, and correct solution to the problem."
+        )
+
     # 데이터 큐레이션 실행
     curator = DataCurator(
         strategy=cfg.data.curation.strategy,
@@ -57,26 +84,11 @@ def main(cfg: DictConfig) -> None:
         prompt_template=getattr(
             cfg.data.curation,
             "prompt_template",
-            (
-                "You are an expert mathematician and critical analyst.\n"
-                "Your task is to synthesize multiple, potentially flawed, solution attempts "
-                "into a single, correct, and comprehensive final answer.\n\n"
-                "You will be given a problem, followed by several solution attempts.\n"
-                "Solution attempts include confidence scores to help estimate their quality.\n\n"
-                "Carefully review all the provided information. It is possible that any, all, or none "
-                "of the solutions are correct or complete.\n"
-                "Use them as starting points—correcting mistakes, filling in gaps, and/or combining "
-                "useful ideas—to produce your final solution.\n\n"
-                "---\n"
-                "GIVEN THE FOLLOWING PROBLEM:\n{problem}\n\n"
-                "AND THESE SOLUTION ATTEMPTS:\n{solutions}\n\n"
-                "---\n"
-                "Now, provide the final, comprehensive, and correct solution to the problem."
-            ),
+            default_prompt_template
         ),
     )
     
-    output_dir = os.path.join(cfg.paths.data_dir, "curated")
+    output_dir = os.path.join(cfg.paths.data_dir, f"curated_10pct_{cfg.data.curation.strategy}")
     result_paths = curator.curate_data(
         generated_data_path, 
         output_dir,
@@ -84,13 +96,17 @@ def main(cfg: DictConfig) -> None:
     )
     
     logger.info("✅ Stage 2 완료")
-    
+
     if cfg.data.curation.strategy == "curriculum":
         logger.info("Curriculum 데이터셋 생성 완료:")
         for key, path in result_paths.items():
             logger.info(f"  {key}: {path}")
     elif cfg.data.curation.strategy == "multitask":
         logger.info("Multitask 데이터셋 생성 완료:")
+        logger.info(f"  Train: {result_paths['train']}")
+        logger.info(f"  Validation: {result_paths['validation']}")
+    elif cfg.data.curation.strategy == "baseline":
+        logger.info("Baseline 데이터셋 생성 완료 (confidence 없이 aggregation):")
         logger.info(f"  Train: {result_paths['train']}")
         logger.info(f"  Validation: {result_paths['validation']}")
     else:

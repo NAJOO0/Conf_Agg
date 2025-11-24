@@ -1,6 +1,10 @@
 """
 Stage 4-3 (Baseline Confidence Variants): Aggregation 평가
 Baseline 생성 결과만을 활용하여 다양한 Confidence 스킴을 비교
+
+주요 변경사항:
+- 각 instance당 4번씩 aggregation 생성
+- 4개 결과의 평균으로 최종 accuracy 계산
 """
 
 import os
@@ -289,7 +293,11 @@ def group_solutions_for_aggregation(
 def group_results_by_problem_id(
     results: List[Dict[str, Any]]
 ) -> Dict[str, Dict[str, Any]]:
-    """결과를 problem_id별로 그룹화"""
+    """
+    결과를 problem_id별로 그룹화
+    
+    변경사항: 4개의 생성 결과를 저장하도록 수정
+    """
     grouped: Dict[str, Dict[str, Any]] = {}
     for result in results:
         problem_id = result["problem_id"]
@@ -305,10 +313,11 @@ def group_results_by_problem_id(
             "prompt_text": result.get("prompt_text", ""),
             "num_solutions": result.get("num_solutions", 0),
             "correct_solutions_count": result.get("correct_solutions_count", 0),
-            "generated_text": result.get("generated_text", ""),
-            "parsed_content": result.get("parsed_content", ""),
-            "final_answer": result.get("final_answer", ""),
-            "is_correct": result.get("is_correct"),
+            "generated_texts": result.get("generated_texts", []),  # 4개
+            "parsed_contents": result.get("parsed_contents", []),  # 4개
+            "final_answers": result.get("final_answers", []),  # 4개
+            "is_corrects": result.get("is_corrects", []),  # 4개
+            "accuracy": result.get("accuracy", 0.0),  # 4개 중 정답 비율
             "solution_group_sizes": result.get("solution_group_sizes"),
         }
         grouped[problem_id]["prompts"].append(prompt_info)
@@ -372,12 +381,18 @@ def run_aggregation_for_variants(
     prompt_variant: str,
     aggregator_name: str,
 ) -> Dict[str, Any]:
+    """
+    Confidence variant별로 aggregation 수행
+    
+    변경사항: 각 요청당 4번씩 생성
+    """
     if not aggregation_requests:
         return {}
 
     variant_outputs: Dict[str, Any] = {}
     enable_thinking = eval_config.get("enable_thinking", False)
     do_evaluation = eval_config.get("aggregation_do_evaluation", True)
+    num_generations_per_instance = eval_config.get("num_generations_per_instance", 4)
 
     for variant in confidence_variants:
         variant_id = variant["variant_id"]
@@ -396,17 +411,38 @@ def run_aggregation_for_variants(
             prompt_variant=prompt_variant,
         )
 
+        # n=4로 설정하여 각 프롬프트당 4개 생성
         outputs = llm.generate(formatted_prompts, sampling_params)
 
         variant_results: List[Dict[str, Any]] = []
         for idx, output in enumerate(outputs):
             req = aggregation_requests[idx]
-            agg_text = output.outputs[0].text if output.outputs else ""
-            parsed_content = extract_content(agg_text)
-            agg_answer = math_verifier.extract_final_answer_from_content(parsed_content)
-            is_correct = None
-            if agg_answer and do_evaluation:
-                is_correct = math_verifier.verify_answer(agg_answer, req["ground_truth"])
+            
+            # 4개의 생성 결과 처리
+            generated_texts = []
+            parsed_contents = []
+            final_answers = []
+            is_corrects = []
+            
+            for gen_output in output.outputs:
+                agg_text = gen_output.text
+                parsed_content = extract_content(agg_text)
+                agg_answer = math_verifier.extract_final_answer_from_content(parsed_content)
+                
+                is_correct = None
+                if agg_answer and do_evaluation:
+                    is_correct = math_verifier.verify_answer(agg_answer, req["ground_truth"])
+                
+                generated_texts.append(agg_text)
+                parsed_contents.append(parsed_content)
+                final_answers.append(agg_answer)
+                is_corrects.append(is_correct)
+            
+            # 4개 결과의 평균 accuracy 계산
+            if do_evaluation:
+                accuracy = sum(1 for correct in is_corrects if correct) / len(is_corrects)
+            else:
+                accuracy = None
 
             variant_results.append(
                 {
@@ -416,16 +452,17 @@ def run_aggregation_for_variants(
                     "prompt_text": prompt_texts[idx],
                     "num_solutions": len(req["solutions"]),
                     "correct_solutions_count": req["correct_count"],
-                    "generated_text": agg_text,
-                    "parsed_content": parsed_content,
-                    "final_answer": agg_answer,
-                    "is_correct": is_correct,
+                    "generated_texts": generated_texts,
+                    "parsed_contents": parsed_contents,
+                    "final_answers": final_answers,
+                    "is_corrects": is_corrects,
+                    "accuracy": accuracy,
                     "solution_group_sizes": req["solution_group_sizes"],
                 }
             )
 
         grouped_results = group_results_by_problem_id(variant_results)
-        summary = compute_accuracy_summary(grouped_results)
+        summary = compute_accuracy_summary(grouped_results, num_generations_per_instance)
 
         variant_outputs[variant_id] = {
             "variant_name": variant.get("display_name", variant_id),
@@ -436,30 +473,43 @@ def run_aggregation_for_variants(
         }
 
         logger.info(
-            "[%s] Variant %s 요약: correct=%d / total=%d (acc=%.3f)",
+            "[%s] Variant %s 요약: avg_accuracy=%.3f (total_prompts=%d, total_generations=%d)",
             aggregator_name,
             variant_id,
-            summary["correct"],
-            summary["total"],
             summary["accuracy"],
+            summary["total_prompts"],
+            summary["total_generations"],
         )
 
     return variant_outputs
 
 
-def compute_accuracy_summary(grouped_results: Dict[str, Any]) -> Dict[str, Any]:
-    total = 0
-    correct = 0
+def compute_accuracy_summary(
+    grouped_results: Dict[str, Any],
+    num_generations_per_instance: int = 4
+) -> Dict[str, Any]:
+    """
+    정확도 요약 계산
+    
+    변경사항: 각 prompt의 accuracy(4개 평균)를 전체 평균
+    """
+    total_accuracy = 0.0
+    total_prompts = 0
+    
     for problem_data in grouped_results.values():
         prompts = problem_data.get("prompts", [])
         for prompt in prompts:
-            total += 1
-            if prompt.get("is_correct"):
-                correct += 1
+            accuracy = prompt.get("accuracy", 0.0)
+            if accuracy is not None:
+                total_accuracy += accuracy
+                total_prompts += 1
+    
+    avg_accuracy = total_accuracy / total_prompts if total_prompts > 0 else 0.0
+    
     return {
-        "correct": correct,
-        "total": total,
-        "accuracy": correct / total if total > 0 else 0.0,
+        "total_prompts": total_prompts,
+        "total_generations": total_prompts * num_generations_per_instance,
+        "accuracy": avg_accuracy,
     }
 
 
@@ -605,8 +655,13 @@ def main(cfg: DictConfig) -> None:
         logger.info("GPU 설정: device=0, GPU=%s", torch.cuda.get_device_name(0))
 
     logger.info("🚀 Stage 4-3 (Baseline Confidence Variants) 시작")
-
+    
     eval_config = cfg.evaluation.benchmarks.evaluation
+    
+    # 생성 횟수 설정
+    num_generations_per_instance = eval_config.get("num_generations_per_instance", 4)
+    logger.info("📊 Instance당 생성 횟수: %d", num_generations_per_instance)
+    
     prompt_variant_cfg = eval_config.get("aggregation_prompt_variant", "default")
     prompt_variant_key = prompt_variant_cfg if prompt_variant_cfg in PROMPT_VARIANT_TEMPLATES else "default"
     prompt_template_override = eval_config.get("aggregation_prompt_template")
@@ -622,14 +677,12 @@ def main(cfg: DictConfig) -> None:
         return
 
     # 출력 디렉토리 설정
-    # Baseline 결과는 comprehensive_results/think or no-think 바로 아래에 저장되므로 공통 경로 사용
     baseline_results_dir = os.path.join(cfg.paths.output_dir, "comprehensive_results")
-    baseline_results_dir = os.path.join(baseline_results_dir, "Qwen_Qwen3-4B-Instruct-2507_1")
-    # baseline_results_dir = os.path.join(baseline_results_dir, "think" if eval_config.get("enable_thinking", False) else "no_think")
-    # Aggregation 결과는 prompt variant별로 분리 저장
+    baseline_results_dir = os.path.join(baseline_results_dir, "Qwen_Qwen3-1.7B_think_True")
+    
     results_dir = os.path.join(cfg.paths.output_dir, "comprehensive_results", prompt_variant_dir)
-    results_dir = os.path.join(results_dir, "Qwen_Qwen3-4B-Instruct-2507_1")
-    # results_dir = os.path.join(results_dir, "think" if eval_config.get("enable_thinking", False) else "no_think")
+    results_dir = os.path.join(results_dir, "Qwen_Qwen3-1.7B_think_True")
+    
     logger.info("사용 프롬프트 variant: %s", prompt_variant_key)
     logger.info("baseline_results_dir: %s", baseline_results_dir)
     logger.info("results_dir: %s", results_dir)
@@ -656,12 +709,14 @@ def main(cfg: DictConfig) -> None:
     if baseline_tokenizer.pad_token is None:
         baseline_tokenizer.pad_token = baseline_tokenizer.eos_token
 
+    # SamplingParams에 n 추가
     sampling_params = SamplingParams(
         temperature=eval_config.temperature,
         max_tokens=eval_config.max_tokens,
         top_p=eval_config.get("top_p", 0.8),
         top_k=eval_config.get("top_k", 20),
         min_p=eval_config.get("min_p", 0.0),
+        n=num_generations_per_instance,  # 각 프롬프트당 4개 생성
     )
 
     baseline_llm = LLM(
@@ -677,7 +732,7 @@ def main(cfg: DictConfig) -> None:
     group_sizes = eval_config.get("aggregation_group_sizes")
     if not group_sizes:
         group_sizes = [4]
-    max_groups = eval_config.get("aggregation_max_groups", 4)
+    max_groups = eval_config.get("aggregation_max_groups", None)
 
     baseline_dataset_cache: Dict[str, Dict[str, Any]] = {}
     requests_cache_by_dataset: Dict[str, Dict[int, List[Dict[str, Any]]]] = {}
@@ -754,11 +809,13 @@ def main(cfg: DictConfig) -> None:
                 output_payload = {
                     "dataset_name": dataset_path,
                     "group_size": group_size,
+                    "num_generations_per_instance": num_generations_per_instance,
                     "aggregators": {},
                 }
 
             output_payload.setdefault("aggregators", {})
             output_payload["aggregators"]["baseline"] = variant_outputs
+            output_payload["num_generations_per_instance"] = num_generations_per_instance
 
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(output_payload, f, ensure_ascii=False, indent=2)
@@ -786,12 +843,12 @@ def main(cfg: DictConfig) -> None:
     torch.cuda.empty_cache()
     logger.info("Baseline 모델 unload 완료")
 
-    # AggLLM 단계
+    # AggLLM 단계 (동일한 방식으로 수정)
     checkpoint_num = eval_config.get("checkpoint_num", None)
     if checkpoint_num is not None:
-        aggllm_model_path = os.path.join(cfg.paths.model_dir, f"checkpoint-{checkpoint_num}")
+        aggllm_model_path = os.path.join(cfg.paths.model_dir, "enable_think_True_20251117",f"checkpoint-{checkpoint_num}")
     else:
-        aggllm_model_path = os.path.join(cfg.paths.model_dir, "checkpoint-final")
+        aggllm_model_path = os.path.join(cfg.paths.model_dir, "enable_think_True_20251117", "checkpoint-final")
 
     if not os.path.exists(aggllm_model_path):
         logger.warning("AggLLM 모델을 찾을 수 없습니다: %s (AggLLM 단계 건너뜀)", aggllm_model_path)
@@ -842,6 +899,7 @@ def main(cfg: DictConfig) -> None:
         )
         logger.info("AggLLM 모델 로드 완료")
 
+        # AggLLM도 동일한 로직으로 처리 (Baseline과 거의 동일)
         for benchmark in benchmark_datasets:
             dataset_name = benchmark["name"]
             dataset_path = benchmark["path"]
@@ -907,11 +965,13 @@ def main(cfg: DictConfig) -> None:
                     output_payload = {
                         "dataset_name": dataset_path,
                         "group_size": group_size,
+                        "num_generations_per_instance": num_generations_per_instance,
                         "aggregators": {},
                     }
 
                 output_payload.setdefault("aggregators", {})
                 output_payload["aggregators"]["aggllm"] = variant_outputs
+                output_payload["num_generations_per_instance"] = num_generations_per_instance
 
                 with open(output_path, "w", encoding="utf-8") as f:
                     json.dump(output_payload, f, ensure_ascii=False, indent=2)
@@ -945,5 +1005,3 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     main()
-
-

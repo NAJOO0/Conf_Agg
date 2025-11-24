@@ -1,17 +1,24 @@
 # @package data.raw_dataset
 generation:
-  num_responses_per_problem: 12  # 각 문제당 8개 응답
-  enable_thinking: false
-  temperature: 0.7
-  max_tokens: 10240 # max_model_len과 동일하게 설정
+  num_responses_per_problem: 32  # 각 문제당 생성할 응답 수
+  enable_thinking: true
+  temperature: 1.5
+  max_tokens: 32768 # 실제 생성 최대 토큰 수 (vllm.max_model_len보다 작아야 함)
   logprobs: 5  # 성능 최적화: logprobs 비활성화 (필요시에만 활성화)
-  top_p: 0.8
+  top_p: 0.95
   top_k: 20
   min_p: 0.0
   presence_penalty: 0.0  # 0.0으로 완전히 비활성화하여 속도와 VRAM 활용률 개선
+
+# 비동기 처리 설정
+async_settings:
+  max_pending_requests: 100    # 최대 동시 요청 수 (max_num_seqs의 2-3배 권장)
+  buffer_size: 200             # 메모리 버퍼 크기 (파일 저장 단위)
+  request_timeout: 720         # 요청 타임아웃 (초, 12분 기본값)
+  max_retries: 2               # 최대 재시도 횟수
   
 confidence:
-  group_size: 512  # 토큰 그룹 크기
+  group_size: 2048  # 토큰 그룹 크기
   methods:
     - "mean_group_confidence"
     - "bottom_10_percent_confidence" 
@@ -20,14 +27,14 @@ confidence:
 vllm:
   tensor_parallel_size: 1
   gpu_memory_utilization: 0.95  # 메모리 사용률 조정
-  max_model_len: 12288 # 더 현실적인 길이로 조정 (18k → 12k)
+  max_model_len: 32768 # 더 현실적인 길이로 조정 (18k → 12k)
   dtype: "auto"  # auto는 FP8 모델 사용 시 자동 처리, 일반 모델은 bfloat16
   kv_cache_dtype: "fp8"  # FP8 활성화 시 KV 캐시도 FP8로 명시적 설정
   trust_remote_code: true
   enforce_eager: false  # 메모리 효율성
   disable_custom_all_reduce: true  # 단일 GPU 최적화
   enable_prefix_caching: true  # 로그 분석: prefix caching이 활성되어 효율적 (동일 프롬프트 8개 응답)
-  max_num_seqs: 100  # 동시 처리 성능 향상
+  max_num_seqs: 40  # 동시 처리 성능 향상
   max_num_batched_tokens: 32768  # 배치 처리 최적화
   disable_log_stats: False  # vLLM 0.10.2에서는 지원 안 됨 (0.11.0+ 필요)
 

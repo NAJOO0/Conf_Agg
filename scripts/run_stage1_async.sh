@@ -22,32 +22,9 @@ export UV_CACHE_DIR=/mnt/data1/.uv-cache
 # - 0: 전체 데이터셋 사용
 # - 100: 처음 100개 문제만 처리 (테스트용)
 # - 1000: 처음 1000개 문제만 처리
-export SAMPLE_LIMIT=0
+export SAMPLE_OFFSET=0
+export SAMPLE_LIMIT=3200
 
-# 백프레셔 제어 (기본: config의 max_num_seqs * 1.5)
-# - vLLM 엔진에 동시 등록 가능한 최대 요청 수
-# - 너무 높으면: 메모리 부족 (OOM) 위험
-# - 너무 낮으면: GPU 활용률 저하
-# - 권장값: max_num_seqs의 1.5~2배
-# - config의 max_num_seqs=112 기준 → 168 (1.5배)
-# - V1 API에서는 각 completion이 별도 카운트되므로 낮게 설정
-export MAX_INFLIGHT=168
-
-# 진행 상황 로깅 주기 (기본: 10)
-# - N개 completion 처리마다 진행률 출력
-# - V1 API: 각 문제당 n개 completion 생성 (예: n=8, 5문제 → 40 completions)
-# - 로그 파일 크기와 가시성의 균형
-# - 너무 낮으면: 로그 파일 비대화
-# - 너무 높으면: 진행 상황 파악 어려움
-# - 권장값: 10~50
-export SNAPSHOT_EVERY=10
-
-# JSONL flush 주기 (기본: 100)
-# - N개 행 쓰기마다 디스크에 강제 동기화 (fsync)
-# - 너무 낮으면: I/O 병목 (성능 저하)
-# - 너무 높으면: 비정상 종료 시 데이터 손실 위험
-# - 권장값: 100~500
-export FLUSH_EVERY=100
 
 # 재시작 기능 활성화 (기본: true)
 # - true: 기존 결과 파일 로드, 중복 응답 자동 스킵
@@ -72,7 +49,7 @@ mkdir -p "$LOG_DIR"
 
 CONFIG_PATH="./config" 
 CONFIG_NAME="config"
-TOTAL_SHARDS=1  # GPU 2개 사용
+TOTAL_SHARDS=2  # GPU 2개 사용
 
 # =============================================================================
 # 시작 로그
@@ -86,6 +63,7 @@ echo "" | tee -a "$LOG_DIR/stage1_background.log"
 # 환경변수 출력
 echo "환경 설정:" | tee -a "$LOG_DIR/stage1_background.log"
 echo "  SAMPLE_LIMIT: $SAMPLE_LIMIT" | tee -a "$LOG_DIR/stage1_background.log"
+echo "  SAMPLE_OFFSET: $SAMPLE_OFFSET" | tee -a "$LOG_DIR/stage1_background.log"
 echo "  MAX_INFLIGHT: $MAX_INFLIGHT" | tee -a "$LOG_DIR/stage1_background.log"
 echo "  SNAPSHOT_EVERY: $SNAPSHOT_EVERY" | tee -a "$LOG_DIR/stage1_background.log"
 echo "  FLUSH_EVERY: $FLUSH_EVERY" | tee -a "$LOG_DIR/stage1_background.log"

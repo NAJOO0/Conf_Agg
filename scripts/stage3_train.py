@@ -4,6 +4,7 @@ Stage 3: GRPO 모델 훈련 스크립트 (Unsloth + TRL)
 Qwen3-1.7B 같은 작은 모델에 최적화
 """
 import os
+import re
 import sys
 from pathlib import Path
 import hydra
@@ -288,11 +289,11 @@ class OptimizedGRPOTrainer:
                 load_in_8bit=False,
                 fast_inference=use_vllm, 
                 # gpu_memory_utilization=self.grpo_config.get("vllm_gpu_memory_utilization", 0.3),
-                gpu_memory_utilization=0.9 if use_vllm else None,
+                # gpu_memory_utilization=0.3,
                 # unsloth_vllm_stanby=True if use_vllm else False,
                 float8_kv_cache=True if use_vllm else False,
                 # attn_implementation="flash_attention_2",  # ✅ 명시적 지정
-                device_map=device_map,  # ✅ DDP 호환
+                # device_map=device_map,  # ✅ DDP 호환
             )
             # logger.info("✅ Flash Attention 2 활성화 성공!")
             
@@ -306,6 +307,7 @@ class OptimizedGRPOTrainer:
                 load_in_4bit=True,
                 load_in_8bit=False,
                 fast_inference=use_vllm, 
+                gpu_memory_utilization=0.5,
                 # unsloth_vllm_stanby=True,
                 float8_kv_cache=use_vllm,
                 device_map=device_map,  # ✅ DDP 호환
@@ -426,6 +428,36 @@ class OptimizedGRPOTrainer:
     def train(self, train_dataset, validation_dataset=None, save_dir="./output"):
         """GRPO 훈련 실행"""
         logger.info("🎯 GRPO 훈련 시작...")
+        resume_checkpoint_path: Optional[str] = None
+        
+        checkpoint_root = Path(save_dir)
+        if checkpoint_root.exists():
+            latest_step = -1
+            latest_checkpoint = None
+            
+            for candidate in checkpoint_root.iterdir():
+                if not candidate.is_dir():
+                    continue
+                
+                match = re.match(r"checkpoint-(\d+)$", candidate.name)
+                if not match:
+                    continue
+                
+                step = int(match.group(1))
+                if step > latest_step:
+                    latest_step = step
+                    latest_checkpoint = candidate
+            
+            if latest_checkpoint is not None:
+                resume_checkpoint_path = str(latest_checkpoint.resolve())
+                logger.info(
+                    f"⏯️ 기존 체크포인트 감지: {latest_checkpoint.name} "
+                    f"(step={latest_step})에서 재개합니다."
+                )
+            else:
+                logger.info("ℹ️ save_dir에 checkpoint-* 디렉토리가 없습니다. 처음부터 시작합니다.")
+        else:
+            logger.info("ℹ️ save_dir이 비어있습니다. 처음부터 시작합니다.")
         
         # ===== DDP 환경 감지 =====
         rank = int(os.environ.get("RANK", -1))
@@ -528,7 +560,7 @@ class OptimizedGRPOTrainer:
             num_train_epochs=self.training_config.get("epochs", 1),
             per_device_train_batch_size=batch_size,
             gradient_accumulation_steps=self.training_config.get("gradient_accumulation_steps", 4),
-            
+            steps_per_generation=self.training_config.get("steps_per_generation", 1),
             # max_steps 설정 (데이터셋이 비어있을 때 필수)
             max_steps=self.training_config.get("max_steps", -1),
             
@@ -543,7 +575,7 @@ class OptimizedGRPOTrainer:
             max_completion_length=self.training_config.get("max_response_length", 1024),
             temperature=self.grpo_config.get("temperature", 1.0),
             beta=self.grpo_config.get("beta", 0.01),  # 0이 아닌 작은 값
-            
+
             # 최적화
             optim="adamw_8bit",
             # gradient_checkpointing=True,
@@ -574,7 +606,7 @@ class OptimizedGRPOTrainer:
             dataloader_num_workers=1,
             remove_unused_columns=False,
         )
-        
+        logger.info(f"grpo_config: {grpo_config}")
         # 유효 배치 크기
         effective_batch_size = (
             grpo_config.per_device_train_batch_size
@@ -601,12 +633,16 @@ class OptimizedGRPOTrainer:
             processing_class=self.tokenizer,
             eval_dataset=validation_dataset,
         )
-        trainer.add_callback(VLLMMemoryMonitor())
+        # trainer.add_callback(VLLMMemoryMonitor())
         # trainer.add_callback(AggressiveVLLMCleanup())
 
         # 훈련 실행
         logger.info("🏃 훈련 시작!")
-        trainer.train()
+        train_kwargs = {}
+        if resume_checkpoint_path:
+            train_kwargs["resume_from_checkpoint"] = resume_checkpoint_path
+        
+        trainer.train(**train_kwargs)
         
         # 저장
         logger.info(f"💾 모델 저장: {save_dir}")
@@ -688,15 +724,12 @@ def main(cfg: DictConfig) -> None:
     
     # 디렉토리 생성
     os.makedirs(cfg.paths.model_dir, exist_ok=True)
-    # enavle_think 및 훈련 날짜 폴더데 model 저장
-    enable_think = cfg.training.training.enable_think
-    train_date = datetime.now().strftime("%Y%m%d")
-    num_generations = cfg.training.grpo.num_generations
-    model_dir = os.path.join(cfg.paths.model_dir, f"enable_think_{enable_think}_{train_date}_{num_generations}")
+    model_save_dir = cfg.training.training.get("model_save_dir", "10pct_baseline")
+    model_dir = os.path.join(cfg.paths.model_dir, model_save_dir)
     os.makedirs(model_dir, exist_ok=True)
     # 입력 파일 경로 확인
-    train_data_path = os.path.join(cfg.paths.data_dir, "curated", "train_filtered.parquet")
-    validation_data_path = os.path.join(cfg.paths.data_dir, "curated", "valid_filtered.parquet")
+    train_data_path = os.path.join(cfg.paths.data_dir, f"curated_{model_save_dir}", "train_filtered.parquet")
+    validation_data_path = os.path.join(cfg.paths.data_dir, f"curated_{model_save_dir}", "valid_filtered.parquet")
     
     if not os.path.exists(train_data_path):
         logger.error(f"훈련 데이터 파일을 찾을 수 없습니다: {train_data_path}")

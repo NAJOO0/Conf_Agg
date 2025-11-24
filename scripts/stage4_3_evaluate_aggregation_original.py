@@ -155,7 +155,7 @@ def count_correct_solutions(solutions: list, ground_truth: str, math_verifier: M
 
 def group_solutions_for_aggregation(
     filtered_solutions: list,
-    target_group_size: int = None,
+    target_group_size: int = 4,
     max_groups: int = None
 ) -> List[list]:
     """
@@ -311,7 +311,7 @@ def main(cfg: DictConfig) -> None:
     # 디렉토리 설정
     results_dir = os.path.join(cfg.paths.output_dir, "comprehensive_results")
     # results_dir = os.path.join(results_dir, "think" if eval_config.get("enable_thinking", False) else "no_think")
-    results_dir = os.path.join(results_dir, "no_think_no_think")
+    results_dir = os.path.join(results_dir, "Qwen_Qwen3-1.7B_think_False_temperature1.0")
     logger.info(f"results_dir: {results_dir}")
     # Math Verifier 초기화
     math_verifier = MathVerifier(
@@ -359,8 +359,7 @@ def main(cfg: DictConfig) -> None:
         aggllm_model_path = os.path.join(cfg.paths.model_dir,f"checkpoint-{checkpoint_num}")
     else:
         # aggllm_model_path = os.path.join(cfg.paths.model_dir, "enable_think_True_20251117/checkpoint-final")
-        # aggllm_model_path = os.path.join(cfg.paths.model_dir, "checkpoint-final")
-        aggllm_model_path = None
+        aggllm_model_path = os.path.join(cfg.paths.model_dir, "checkpoint-final")
     
     if not os.path.exists(aggllm_model_path):
         logger.warning(f"AggLLM 모델을 찾을 수 없습니다: {aggllm_model_path}")
@@ -457,7 +456,7 @@ def main(cfg: DictConfig) -> None:
                             problem_token_counts.append(token_count)
                     
                     # 16384을 넘는 토큰 제거
-                    filtered_token_counts = [t for t in problem_token_counts if t <= 16384]
+                    filtered_token_counts = [t for t in problem_token_counts if t <= 32768]
                     total_instance_tokens = sum(filtered_token_counts)
                     instance_token_counts.append({
                         "problem_id": problem_id,
@@ -471,7 +470,7 @@ def main(cfg: DictConfig) -> None:
                     })
                 
                 # 16384 토큰을 넘는 instance는 평균 계산에서 제외
-                filtered_instances = [inst for inst in instance_token_counts if inst.get("total_instance_tokens", 0) <= 16384]
+                filtered_instances = [inst for inst in instance_token_counts]
                 # 각 solution의 토큰 수가 16384을 넘는 경우도 제외
                 all_tokens = [t for inst in filtered_instances for t in inst["token_counts"] if t <= 16384]
 
@@ -1336,3 +1335,5 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     main()
+
+

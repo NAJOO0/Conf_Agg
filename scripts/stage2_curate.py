@@ -38,7 +38,7 @@ def main(cfg: DictConfig) -> None:
     os.makedirs(os.path.join(cfg.paths.data_dir, "curated"), exist_ok=True)
     
     # 입력 파일 경로
-    generated_data_path = os.path.join(cfg.paths.data_dir, "generated", "dataset_tarin_cleaned_sampled_10pct.parquet")
+    generated_data_path = os.path.join(cfg.paths.data_dir, "generated", "dataset_4000_think.parquet")
     
     if not os.path.exists(generated_data_path):
         logger.error(f"Stage 1 결과 파일을 찾을 수 없습니다: {generated_data_path}")
@@ -54,8 +54,7 @@ def main(cfg: DictConfig) -> None:
             "{solutions}\n"
             "It is possible that any, all, or none of these solutions are correct or complete. "
             "Carefully review the provided solutions, using them as starting points—correcting mistakes, "
-            "filling in gaps, and/or combining useful ideas—to produce a final, comprehensive, "
-            "and correct solution to the problem."
+            "filling in gaps, and/or combining useful ideas--to produce a final, comprehensive, and correct solution to the problem."
         )
     else:
         default_prompt_template = (
@@ -64,9 +63,8 @@ def main(cfg: DictConfig) -> None:
             "and these solution attempts with their confidence scores:\n"
             "{solutions}\n"
             "It is possible that any, all, or none of these solutions are correct or complete. "
-            "Carefully review the provided solutions, using them as starting points—correcting mistakes, "
-            "filling in gaps, and/or combining useful ideas—to produce a final, comprehensive, "
-            "and correct solution to the problem."
+            "Carefully review the provided solutions and their confidence scores, using them as starting points—correcting mistakes, "
+            "filling in gaps, and/or combining useful ideas--to produce a final, comprehensive, and correct solution to the problem."
         )
 
     # 데이터 큐레이션 실행
@@ -75,9 +73,11 @@ def main(cfg: DictConfig) -> None:
         easy_sample_percentage=cfg.data.curation.easy_sample_percentage,
         num_sets_per_problem=cfg.data.curation.num_sets_per_problem,
         set_size=cfg.data.curation.set_size,
+        enable_thinking=cfg.data.curation.enable_thinking,
         timeout=cfg.data.curation.verification.timeout,
-        confidence_key=getattr(cfg.data.curation, "confidence_key", "tail_confidence"),
+        confidence_key=getattr(cfg.data.curation, "confidence_key", "bottom_10_percent_confidence"),
         fill_insufficient_with_sampling=getattr(cfg.data.curation, "fill_insufficient_with_sampling", False),
+        order_strategy=getattr(cfg.data.curation, "order_strategy", "hard_first"),
         prompt_template=getattr(
             cfg.data.curation,
             "prompt_template",
@@ -85,7 +85,7 @@ def main(cfg: DictConfig) -> None:
         ),
     )
     
-    output_dir = os.path.join(cfg.paths.data_dir, f"curated_10pct_{cfg.data.curation.strategy}")
+    output_dir = os.path.join(cfg.paths.data_dir, f"curated_4000_32_{cfg.data.curation.strategy}")
     result_paths = curator.curate_data(
         generated_data_path, 
         output_dir,

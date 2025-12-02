@@ -10,25 +10,28 @@ datasets:
     path: "data/benchmarks/hmmt25.jsonl"
 
 evaluation:
-  num_candidates: 4
   max_tokens: 16384
+  max_model_len: 32768
   temperature: 1.0
   logprobs: 5  # 로그 확률 개수 (신뢰도 계산에 사용)
-  top_p: 0.80
+  top_p: 0.95
   top_k: 20
   min_p: 0.0
   timeout: 60
   gpu_memory_utilization: 0.95  # GPU 메모리 사용률 (사용 가능한 메모리에 맞춰 조정)
-  checkpoint_num: 1000  # null이면 AggLLM 모델 로드 건너뜀, 숫자 지정 시 checkpoint-{숫자} 사용
+  checkpoint_num: 2400  # null이면 AggLLM 모델 로드 건너뜀, 숫자 지정 시 checkpoint-{숫자} 사용
   enable_thinking: false  # enable_thinking=True일 때 <think> 태그 사용, group_size=2048 사용
-  confidence_group_size: 512  # enable_thinking=True일 때 사용할 group_size
-  aggregation_do_analysis: true
-  aggregation_do_generation: false
-  aggregation_do_evaluation: false
-  skip_baseline: true # true일 때 baseline 결과 생성 건너뜀
-  filter_max_tokens: 40000
+  confidence_group_size: 2048  # enable_thinking=True일 때 사용할 group_size
+  results_dir: "comprehensive_results/Qwen_Qwen3-1.7B_think_True_32768"
+  experiment_name: "4000_32_naive_uniform"
+  checkpoint_interval: 100
+  aggregation_do_analysis: false
+  aggregation_do_generation: true
+  aggregation_do_evaluation: true
+  skip_baseline: false # true일 때 baseline 결과 생성 건너뜀
+  filter_max_tokens: 32768
   aggregation_group_sizes: [8]  # 필요 시 [8,4, 2, 1] 등으로 재설정 가능
-  aggregation_prompt_variant: "confidence_no_guidance" # "confidence_no_guidance", "confidence_full_guidance", "default"
+  aggregation_prompt_variant: "default" # "default", "without_confidence"
   aggregation_confidence:
     metrics:
       - key: "mean_group_confidence"

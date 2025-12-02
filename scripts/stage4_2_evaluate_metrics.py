@@ -362,10 +362,9 @@ def main(cfg: DictConfig) -> None:
     logger.info("     * 64개 → 8개 셋 (각 8개)")
     
     # 디렉토리 설정
-    results_dir = os.path.join(cfg.paths.output_dir, "comprehensive_results")
-    # results_dir = os.path.join(results_dir, "think_prev_3600")
-    results_dir = os.path.join(results_dir, "Qwen_Qwen3-1.7B_think_True")
-    # results_dir = os.path.join(results_dir, "Qwen_Qwen3-1.7B_think_False_temperature1.0")
+    results_dir = cfg.evaluation.benchmarks.evaluation.results_dir
+    if not os.path.isabs(results_dir):
+        results_dir = os.path.join(cfg.paths.output_dir, results_dir)
     
     # Math Verifier 초기화
     math_verifier = MathVerifier(

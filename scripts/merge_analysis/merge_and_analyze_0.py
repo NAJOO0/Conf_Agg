@@ -660,7 +660,14 @@ def print_verification_comparison(df: pd.DataFrame) -> pd.DataFrame:
         voting_results = compute_instance_voting_results(df)
         df = add_voting_results_to_dataframe(df, voting_results)
     
-    # ArrowExtensionArray 방지를 위해 명시적 캐스팅
+    # ArrowExtensionArray 방지를 위해 명시적 캐스팅 및 NA 처리
+    df['is_correct_exact'] = df['is_correct_exact'].fillna(False)
+    df['is_correct_math_verifier'] = df['is_correct_math_verifier'].fillna(False)
+    df['is_correct_majority_voting'] = df['is_correct_majority_voting'].fillna(False)
+    df['is_correct_weighted_majority_voting_bottom10'] = df['is_correct_weighted_majority_voting_bottom10'].fillna(False)
+    df['is_correct_weighted_majority_voting_lowest'] = df['is_correct_weighted_majority_voting_lowest'].fillna(False)
+    df['is_correct_weighted_majority_voting_tail'] = df['is_correct_weighted_majority_voting_tail'].fillna(False)
+
     is_corrects_exact = df['is_correct_exact'].astype(int).to_numpy()
     is_corrects_math_verifier = df['is_correct_math_verifier'].astype(int).to_numpy()
     is_corrects_majority = df['is_correct_majority_voting'].astype(int).to_numpy()
@@ -2505,8 +2512,16 @@ def analyze_single_file(file_path: str, output_dir: str = None) -> None:
         logger.info(f"출력 디렉토리: {output_dir}")
         
         # 2. generated_text 파싱 및 검증
+        # 2. generated_text 파싱 및 검증
+        need_parsing = False
         if 'reasoning_content' not in df.columns or 'content' not in df.columns or 'final_answer' not in df.columns or 'is_correct_math_verifier' not in df.columns:
+            need_parsing = True
             logger.info("\n파싱 컬럼이 없어 파싱을 진행합니다...")
+        elif df['is_correct_math_verifier'].isna().any():
+            need_parsing = True
+            logger.info("\n검증 컬럼에 결측치가 있어 다시 파싱을 진행합니다...")
+
+        if need_parsing:
             df = parse_and_verify_dataframe(df)
             output_filename = "raw_generated_parsed.parquet"
             output_path = os.path.join(output_dir, output_filename)

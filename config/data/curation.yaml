@@ -1,9 +1,12 @@
 # @package data.curation
 strategy: "baseline"  # baseline, naive, curriculum, multitask 
-easy_sample_percentage: 35
-num_sets_per_problem: 8
+enable_thinking: false # enable_thinking=True일 때 <think> 태그 사용, group_size=2048 사용
+easy_sample_percentage: 50
+num_sets_per_problem: 4
 set_size: 8
 fill_insufficient_with_sampling: true
+confidence_key: "bottom_10_percent_confidence"
+order_strategy: "easy_first"  # hard_first, easy_first, shuffle
 
 verification:
   library: "math_verify"

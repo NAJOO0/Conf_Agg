@@ -2,8 +2,8 @@
 method: "lora"  # lora, full
 
 lora:
-  r: 16
-  lora_alpha: 32
+  r: 32
+  lora_alpha: 64
   lora_dropout: 0.0
   target_modules: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
   bias: "none"
@@ -11,7 +11,7 @@ lora:
 
 grpo:
   group_size: 1
-  kl_coefficient: 0.0
+  beta: 0
   aggregator_temperature: 1.5
   num_generations: 8  # sequence_length=32768 유지하면서 메모리 절약
   temperature: 1.5  # 생성 시 temperature
@@ -27,8 +27,8 @@ grpo:
   vllm_server_port: 8000
 training:
   epochs: 1
-  batch_size: 8  # per_device_train_batch_size (num_generations=2의 배수)
-  gradient_accumulation_steps: 4  # 유효 배치 크기 유지: 2 * 8 = 16 (이전 4*4=16과 동일)
+  batch_size: 16  # per_device_train_batch_size (num_generations=2의 배수)
+  gradient_accumulation_steps: 8  # 유효 배치 크기 유지: 2 * 8 = 16 (이전 4*4=16과 동일)
   steps_per_generation: 1
   max_prompt_length: 16384  # 원하는 길이 유지
   max_response_length: 4096  # 원하는 길이 유지
@@ -42,8 +42,8 @@ training:
   logging_steps: 1
   seed: 42  # 재현성을 위한 시드
   use_wandb: true  # WandB 사용 여부
-  enable_think: true
-  model_save_dir: "10pct_baseline"
+  enable_think: false
+  model_save_dir: "3200_32_naive"
 optimizer:
   type: "adamw"
   weight_decay: 0.01

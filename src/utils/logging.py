@@ -55,38 +55,28 @@ def setup_logging(
         logger.addHandler(file_handler)
     
     # WandB 초기화 (선택사항)
+    # TRL이 wandb를 초기화하므로, 여기서는 run_name만 환경 변수로 설정
     if wandb_enabled:
-        # WandB API 키 확인
-        if not wandb.api.api_key:
-            logger.warning("WandB API 키가 설정되지 않았습니다. 환경 변수 WANDB_API_KEY를 설정하거나 'wandb login'을 실행해주세요.")
+        # 환경 변수 WANDB_NAME이 있으면 설정 (TRL이 이를 사용할 수 있도록)
+        run_name = os.environ.get("WANDB_NAME", None)
+        if run_name:
+            # TRL이 wandb를 초기화할 때 이 환경 변수를 사용하도록 설정
+            os.environ["WANDB_NAME"] = run_name
+            logger.info(f"WandB run_name 환경 변수 설정: {run_name}")
         else:
+            # 환경 변수가 없으면 Hydra 설정에서 가져오기
             try:
                 hydra_cfg = HydraConfig.get()
-                # job.num이 없을 수 있으므로 안전하게 처리
                 job_name = getattr(hydra_cfg.job, "name", "train")
                 job_num = getattr(hydra_cfg.job, "num", None)
                 if job_num is not None:
                     run_name = f"{job_name}_{job_num}"
                 else:
                     run_name = job_name
-                
-                # hydra_cfg.cfg 대신 OmegaConf를 사용하여 안전하게 변환
-                # 이렇게 하면 job.num 검증 에러를 피할 수 있습니다
-                try:
-                    config_dict = OmegaConf.to_container(hydra_cfg.cfg, resolve=True)
-                except Exception:
-                    # Hydra config를 가져올 수 없으면 빈 dict 사용
-                    config_dict = {}
-                
-                wandb.init(
-                    project=wandb_project,
-                    name=run_name,
-                    tags=wandb_tags or [],
-                    config=config_dict
-                )
-                logger.info(f"WandB 초기화 완료: {wandb_project}")
-            except Exception as e:
-                logger.warning(f"WandB 초기화 실패: {e}")
+                os.environ["WANDB_NAME"] = run_name
+                logger.info(f"WandB run_name 환경 변수 설정 (Hydra): {run_name}")
+            except Exception:
+                pass
     
     logger.info(f"로깅 시스템 초기화 완료 (레벨: {log_level})")
     return logger

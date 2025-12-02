@@ -171,39 +171,40 @@ class AggressiveVLLMCleanup(TrainerCallback):
         freed = reserved_before - reserved_after
         logger.info(f"  Freed: {freed:+.2f}GB")
 
-def create_math_reward_function(math_verifier: MathVerifier):
+def create_math_reward_function(math_verifier: MathVerifier, enable_think: bool = False):
     """
     math_verify를 사용하는 reward function을 생성합니다.
-    
+
     Args:
         math_verifier: MathVerifier 인스턴스
-    
+        enable_think: <think> 태그 사용 여부
+
     Returns:
         reward function (completions, ground_truth, **kwargs) -> List[float]
     """
     def reward_func(completions, ground_truth=None, **kwargs):
         """
         생성된 응답에 대해 reward를 계산합니다.
-        
+
         Args:
             completions: 생성된 응답 리스트
             ground_truth: 정답 (dataset의 'ground_truth' 컬럼에서 가져옴)
             **kwargs: 추가 인자 (dataset의 다른 컬럼들)
-        
+
         Returns:
             reward 점수 리스트 (각 completion에 대해 1.0 또는 0.0)
         """
         # ground_truth가 kwargs에 있을 수도 있음
         if ground_truth is None:
             ground_truth = kwargs.get("ground_truth", None)
-        
+
         # 여러 개의 ground_truth가 리스트로 올 수 있음
         if isinstance(ground_truth, list):
             if len(ground_truth) == len(completions):
                 rewards = []
                 for completion, gt in zip(completions, ground_truth):
-                    # 응답에서 최종 답안 추출
-                    predicted_answer = math_verifier.extract_final_answer_from_content(completion)
+                    # 응답에서 최종 답안 추출 (enable_think 고려)
+                    predicted_answer = math_verifier.extract_final_answer(completion, enable_think=enable_think)
                     # 정답 검증
                     is_correct = math_verifier.verify_answer(predicted_answer, gt)
                     rewards.append(1.0 if is_correct else 0.0)
@@ -213,16 +214,16 @@ def create_math_reward_function(math_verifier: MathVerifier):
                 gt = ground_truth[0] if ground_truth else ""
         else:
             gt = ground_truth or ""
-        
+
         # 단일 ground_truth를 모든 completion에 대해 사용
         rewards = []
         for completion in completions:
-            predicted_answer = math_verifier.extract_final_answer_from_content(completion)
+            predicted_answer = math_verifier.extract_final_answer(completion, enable_think=enable_think)
             is_correct = math_verifier.verify_answer(predicted_answer, gt)
             rewards.append(1.0 if is_correct else 0.0)
-        
+
         return rewards
-    
+
     return reward_func
 
 
@@ -391,8 +392,9 @@ class OptimizedGRPOTrainer:
         
         # Reward function
         timeout = self.training_config.get("verification_timeout", 30)
+        enable_think = self.training_config.get("enable_think", False)
         self.math_verifier = MathVerifier(timeout=timeout)
-        self.reward_func = create_math_reward_function(self.math_verifier)
+        self.reward_func = create_math_reward_function(self.math_verifier, enable_think=enable_think)
         
     def _setup_lora(self):
         """LoRA 어댑터 설정"""
@@ -408,7 +410,7 @@ class OptimizedGRPOTrainer:
             lora_alpha=self.lora_config.get("lora_alpha", 16),
             lora_dropout=self.lora_config.get("lora_dropout", 0.0),
             bias=self.lora_config.get("bias", "none"),
-            use_gradient_checkpointing="unsloth",  # Unsloth 최적화
+            use_gradient_checkpointing=False,  # 속도 향상을 위해 끔 (메모리 충분함)
             random_state=self.training_config.get("seed", 42),
             use_rslora=self.lora_config.get("use_rslora", False),
             loftq_config=None,
@@ -574,8 +576,8 @@ class OptimizedGRPOTrainer:
             max_prompt_length=self.training_config.get("max_prompt_length", 512),
             max_completion_length=self.training_config.get("max_response_length", 1024),
             temperature=self.grpo_config.get("temperature", 1.0),
-            beta=self.grpo_config.get("beta", 0.01),  # 0이 아닌 작은 값
-
+            beta=self.grpo_config.get("beta", 0),  # 0이 아닌 작은 값
+            loss_type=self.grpo_config.get("loss_type", "grpo"),
             # 최적화
             optim="adamw_8bit",
             # gradient_checkpointing=True,
@@ -600,9 +602,11 @@ class OptimizedGRPOTrainer:
             
             # WandB
             report_to="wandb" if self.training_config.get("use_wandb", False) else "none",
+            # WandB run_name 설정 (환경 변수에서 가져오기)
+            run_name=os.environ.get("WANDB_NAME", None),
             
             # 기타
-            seed=self.training_config.get("seed", 42),
+            seed=self.training_config.get("seed", 6425),
             dataloader_num_workers=1,
             remove_unused_columns=False,
         )
@@ -633,6 +637,41 @@ class OptimizedGRPOTrainer:
             processing_class=self.tokenizer,
             eval_dataset=validation_dataset,
         )
+        
+        # # 🚀 [수정] SequentialSampler 강제 적용
+        # # TRL_GRPOTrainer(및 부모 Trainer)는 기본적으로 RandomSampler를 사용함.
+        # # 이를 오버라이딩하여 순차적 학습(Hard -> Easy)을 보장.
+        # def get_train_dataloader(self):
+        #     """
+        #     Returns the training [`~torch.utils.data.DataLoader`].
+        #     Overridden to force SequentialSampler.
+        #     """
+        #     if self.train_dataset is None:
+        #         raise ValueError("Trainer: training requires a train_dataset.")
+
+        #     train_dataset = self.train_dataset
+        #     data_collator = self.data_collator
+            
+        #     # SequentialSampler 사용
+        #     from torch.utils.data import SequentialSampler, DataLoader
+        #     sampler = SequentialSampler(train_dataset)
+
+        #     return DataLoader(
+        #         train_dataset,
+        #         batch_size=self.args.per_device_train_batch_size,
+        #         sampler=sampler,
+        #         collate_fn=data_collator,
+        #         drop_last=self.args.dataloader_drop_last,
+        #         num_workers=self.args.dataloader_num_workers,
+        #         pin_memory=self.args.dataloader_pin_memory,
+        #     )
+        
+        # # 메서드 교체 (Monkey Patching)
+        # # 클래스 상속 대신 인스턴스 메서드를 교체하여 더 간단하게 적용
+        # import types
+        # trainer.get_train_dataloader = types.MethodType(get_train_dataloader, trainer)
+        
+        # logger.info("✅ Trainer의 get_train_dataloader를 SequentialSampler로 교체했습니다.")
         # trainer.add_callback(VLLMMemoryMonitor())
         # trainer.add_callback(AggressiveVLLMCleanup())
 

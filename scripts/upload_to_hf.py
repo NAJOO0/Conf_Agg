@@ -119,7 +119,7 @@ def upload_parquet(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Upload a Parquet file to Hugging Face Hub dataset repo")
-    parser.add_argument("--repo-id", type=str, required=True, help="대상 dataset 리포지토리 (e.g., user/dataset)")
+    parser.add_argument("--repo-id", type=str, default="mejoo/deepscalar_solution", help="대상 dataset 리포지토리 (e.g., user/dataset)")
     parser.add_argument("--file", type=str, required=True, help="업로드할 Parquet 파일 경로 (절대 경로 권장)")
     parser.add_argument("--path-in-repo", type=str, default=None, help="리포지토리 내 저장 경로 (기본: data/<파일명>)")
     parser.add_argument("--commit-message", type=str, default="Add parquet", help="커밋 메시지")

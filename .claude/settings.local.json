@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "WebSearch",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(./run_regenerate_1gpu.sh)",
+      "Bash(uv run python:*)"
     ],
     "deny": [],
     "ask": []

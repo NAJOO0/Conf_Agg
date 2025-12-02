@@ -172,6 +172,34 @@ def count_correct_solutions(solutions: list, ground_truth: str, math_verifier: M
     return correct_count
 
 
+def get_majority_voting_answer(solutions: list) -> str:
+    """주어진 solutions에 대한 majority voting 결과 반환
+
+    Args:
+        solutions: solution 리스트
+
+    Returns:
+        가장 많이 등장한 final_answer (동률이면 첫 번째 것 반환)
+    """
+    from collections import Counter
+
+    # 모든 final_answer 수집
+    answers = []
+    for sol in solutions:
+        final_answer = sol.get("final_answer", "")
+        if final_answer:
+            answers.append(final_answer)
+
+    if not answers:
+        return ""
+
+    # 가장 많이 등장한 답 찾기
+    answer_counts = Counter(answers)
+    majority_answer = answer_counts.most_common(1)[0][0]
+
+    return majority_answer
+
+
 def group_solutions_for_aggregation(
     filtered_solutions: list,
     target_group_size: int = 4,
@@ -225,6 +253,8 @@ def group_results_by_problem_id(results: List[Dict[str, Any]]) -> Dict[str, Dict
             "prompt_text": result.get("prompt_text", ""),
             "num_solutions": result.get("num_solutions", 0),
             "correct_solutions_count": result.get("correct_solutions_count", 0),
+            "majority_voting_answer": result.get("majority_voting_answer", ""),
+            "is_majority_voting_correct": result.get("is_majority_voting_correct", None),
             "generated_text": result.get("generated_text", ""),
             "parsed_content": result.get("parsed_content", ""),
             "final_answer": result.get("final_answer", ""),
@@ -313,6 +343,7 @@ def main(cfg: DictConfig) -> None:
     
     # 옵션 확인
     eval_config = cfg.evaluation.benchmarks.evaluation
+    logger.info(f"eval_config: {eval_config}")
     do_analysis = eval_config.get("aggregation_do_analysis", True)
     do_generation = eval_config.get("aggregation_do_generation", True)
     do_evaluation = eval_config.get("aggregation_do_evaluation", True)
@@ -328,10 +359,16 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Baseline 건너뛰기: {skip_baseline}")
     
     # 디렉토리 설정
-    results_dir = os.path.join(cfg.paths.output_dir, "comprehensive_results")
-    # results_dir = os.path.join(results_dir, "think" if eval_config.get("enable_thinking", False) else "no_think")
-    results_dir = os.path.join(results_dir, "Qwen_Qwen3-1.7B_think_False_temperature1.0")
-    logger.info(f"results_dir: {results_dir}")
+    base_results_dir = eval_config.results_dir
+    if not os.path.isabs(base_results_dir):
+        base_results_dir = os.path.join(cfg.paths.output_dir, base_results_dir)
+    logger.info(f"base_results_dir: {base_results_dir}")
+
+    # Experiment name for output directory
+    experiment_name = eval_config.get("experiment_name", "3200_32_naive")
+    results_dir = os.path.join(base_results_dir, experiment_name)
+    os.makedirs(results_dir, exist_ok=True)
+    logger.info(f"results_dir (output): {results_dir}")
     # Math Verifier 초기화
     math_verifier = MathVerifier(
         timeout=eval_config.timeout
@@ -359,6 +396,15 @@ def main(cfg: DictConfig) -> None:
         "and correct solution to the problem."
     )
     
+    # Aggregation 프롬프트 템플릿 선택 (삭제: 아래에서 직접 사용)
+    # prompt_variant = eval_config.get("aggregation_prompt_variant", "default")
+    # if prompt_variant == "without_confidence":
+    #     aggregation_prompt_template = aggregation_prompt_template_without_conf
+    # else:
+    #     aggregation_prompt_template = aggregation_prompt_template_with_conf
+    
+    # logger.info(f"Aggregation Prompt Template: {prompt_variant}")
+    
     # 벤치마크 데이터셋 설정
     benchmark_datasets = [
         {"name": "AIME24", "path": "math-ai/aime24"},
@@ -370,8 +416,8 @@ def main(cfg: DictConfig) -> None:
     # 모델 경로 확인
     checkpoint_num = eval_config.checkpoint_num
     if checkpoint_num is not None:
-        # aggllm_model_path = os.path.join(cfg.paths.model_dir,f"enable_think_True_20251117/checkpoint-{checkpoint_num}")
-        aggllm_model_path = os.path.join(cfg.paths.model_dir,f"10pct_naive/checkpoint-{checkpoint_num}")
+        # experiment_name is already retrieved above
+        aggllm_model_path = os.path.join(cfg.paths.model_dir, experiment_name, f"checkpoint-{checkpoint_num}")
     else:
         # aggllm_model_path = os.path.join(cfg.paths.model_dir, "enable_think_True_20251117/checkpoint-final")
         aggllm_model_path = os.path.join(cfg.paths.model_dir, "checkpoint-final")
@@ -401,11 +447,10 @@ def main(cfg: DictConfig) -> None:
         
         # 그룹 크기별로 실험 (4, 2, 1)
         group_sizes = eval_config.aggregation_group_sizes
-        all_group_results = {}  # {group_size: aggregation_results}
-        
+
         # Baseline 결과 로드
         baseline_path = os.path.join(
-            results_dir,
+            base_results_dir,
             f"{dataset_safe_name}_baseline_generated.json"
         )
         
@@ -419,7 +464,7 @@ def main(cfg: DictConfig) -> None:
         
         # AggLLM 결과 로드
         aggllm_path = os.path.join(
-            results_dir,
+            base_results_dir,
             f"{dataset_safe_name}_aggllm_generated.json"
         )
         
@@ -462,60 +507,57 @@ def main(cfg: DictConfig) -> None:
                     solutions = problem_data["solutions"]
                     problem_id = problem_data["problem_id"]
                     
-                    problem_token_counts = []
-                    for sol in solutions:
-                        content = sol.get("content", "")
-                        if content:
-                            tokens = baseline_tokenizer.encode(content, add_special_tokens=False)
-                            token_count = len(tokens)
-                            problem_token_counts.append(token_count)
+                    problem_full_token_counts = []
+                    problem_after_think_token_counts = []
                     
-                    # 16384을 넘는 토큰 제거
-                    filtered_token_counts = [t for t in problem_token_counts if t <= 16384]
-                    total_instance_tokens = sum(filtered_token_counts)
+                    for sol in solutions:
+                        generated_text = sol.get("generated_text", "")
+                        content = sol.get("content", "")
+                        
+                        if generated_text:
+                            # Full tokens
+                            full_tokens = baseline_tokenizer.encode(generated_text, add_special_tokens=False)
+                            problem_full_token_counts.append(len(full_tokens))
+                            
+                        if content:
+                            # After think tokens (content is already extracted in stage4_1)
+                            after_think_tokens = baseline_tokenizer.encode(content, add_special_tokens=False)
+                            problem_after_think_token_counts.append(len(after_think_tokens))
+                    
                     instance_token_counts.append({
                         "problem_id": problem_id,
-                        "token_counts": filtered_token_counts,
-                        "total_solutions": len(solutions),
-                        "filtered_solutions": len(filtered_token_counts),
-                        "total_instance_tokens": total_instance_tokens,
-                        "avg_tokens": sum(filtered_token_counts) / len(filtered_token_counts) if filtered_token_counts else 0,
-                        "max_tokens": max(filtered_token_counts) if filtered_token_counts else 0,
-                        "min_tokens": min(filtered_token_counts) if filtered_token_counts else 0
+                        "full_solution": problem_full_token_counts,
+                        "after_think": problem_after_think_token_counts
                     })
                 
-                # 16384 토큰을 넘는 instance는 평균 계산에서 제외
-                filtered_instances = [inst for inst in instance_token_counts if inst.get("total_instance_tokens", 0) <= 16384]
-                # 각 solution의 토큰 수가 16384을 넘는 경우도 제외
-                all_tokens = [t for inst in filtered_instances for t in inst["token_counts"] if t <= 16384]
-
-                # 검증: all_tokens에 16384을 넘는 값이 있는지 확인
-                if all_tokens:
-                    max_token_value = max(all_tokens)
-                    if max_token_value > 16384:
-                        logger.warning(f"경고: all_tokens에 16384을 넘는 값이 있습니다: {max_token_value}")
-                        # 16384을 넘는 값 제거
-                        all_tokens = [t for t in all_tokens if t <= 16384]
-                
-                analysis_results["baseline_token_distribution"] = {
-                    "instance_level": instance_token_counts,
-                    "dataset_level": {
-                        "total_instances": len(instance_token_counts),
-                        "filtered_instances": len(filtered_instances),
-                        "excluded_instances": len(instance_token_counts) - len(filtered_instances),
-                        "total_solutions": len(all_tokens),
-                        "avg_tokens": sum(all_tokens) / len(all_tokens) if all_tokens else 0,
-                        "max_tokens": max(all_tokens) if all_tokens else 0,
-                        "min_tokens": min(all_tokens) if all_tokens else 0,
-                        "median_tokens": sorted(all_tokens)[len(all_tokens)//2] if all_tokens else 0
+                # Dataset level stats calculation
+                def calculate_stats(instances, key):
+                    all_tokens = []
+                    for inst in instances:
+                        tokens = inst[key]
+                        # 16384 이하만 포함
+                        all_tokens.extend([t for t in tokens if t <= 16384])
+                    
+                    if not all_tokens:
+                        return {}
+                    
+                    return {
+                        "avg_tokens": sum(all_tokens) / len(all_tokens),
+                        "max_tokens": max(all_tokens),
+                        "min_tokens": min(all_tokens),
+                        "median_tokens": sorted(all_tokens)[len(all_tokens)//2],
+                        "total_solutions": len(all_tokens)
                     }
+
+                analysis_results["baseline_token_distribution"] = {
+                    "full_solution": calculate_stats(instance_token_counts, "full_solution"),
+                    "after_think": calculate_stats(instance_token_counts, "after_think"),
+                    "instance_level": instance_token_counts
                 }
                 
-                # 최종 검증
-                if all_tokens and analysis_results["baseline_token_distribution"]["dataset_level"]["max_tokens"] > 16384:
-                    logger.error(f"오류: dataset_level max_tokens가 16384을 넘습니다: {analysis_results['baseline_token_distribution']['dataset_level']['max_tokens']}")
-                    analysis_results["baseline_token_distribution"]["dataset_level"]["max_tokens"] = max([t for t in all_tokens if t <= 16384]) if all_tokens else 0
-                logger.info(f"Baseline 분석 완료: {len(instance_token_counts)}개 인스턴스, 평균 {analysis_results['baseline_token_distribution']['dataset_level']['avg_tokens']:.1f} 토큰")
+                logger.info(f"Baseline 분석 완료: {len(instance_token_counts)}개 인스턴스")
+                logger.info(f"Full Solution 평균: {analysis_results['baseline_token_distribution']['full_solution'].get('avg_tokens', 0):.1f}")
+                logger.info(f"After Think 평균: {analysis_results['baseline_token_distribution']['after_think'].get('avg_tokens', 0):.1f}")
             
             # AggLLM 토큰 수 분석
             if aggllm_data:
@@ -532,60 +574,38 @@ def main(cfg: DictConfig) -> None:
                     solutions = problem_data["solutions"]
                     problem_id = problem_data["problem_id"]
                     
-                    problem_token_counts = []
-                    for sol in solutions:
-                        content = sol.get("content", "")
-                        if content:
-                            tokens = aggllm_tokenizer.encode(content, add_special_tokens=False)
-                            token_count = len(tokens)
-                            problem_token_counts.append(token_count)
+                    problem_full_token_counts = []
+                    problem_after_think_token_counts = []
                     
-                    # 16384을 넘는 토큰 제거
-                    filtered_token_counts = [t for t in problem_token_counts if t <= 16384]
-                    total_instance_tokens = sum(filtered_token_counts)
+                    for sol in solutions:
+                        generated_text = sol.get("generated_text", "")
+                        content = sol.get("content", "")
+                        
+                        if generated_text:
+                            # Full tokens
+                            full_tokens = aggllm_tokenizer.encode(generated_text, add_special_tokens=False)
+                            problem_full_token_counts.append(len(full_tokens))
+                            
+                        if content:
+                            # After think tokens (content is already extracted in stage4_1)
+                            after_think_tokens = aggllm_tokenizer.encode(content, add_special_tokens=False)
+                            problem_after_think_token_counts.append(len(after_think_tokens))
+                    
                     instance_token_counts.append({
                         "problem_id": problem_id,
-                        "token_counts": filtered_token_counts,
-                        "total_solutions": len(solutions),
-                        "filtered_solutions": len(filtered_token_counts),
-                        "total_instance_tokens": total_instance_tokens,
-                        "avg_tokens": sum(filtered_token_counts) / len(filtered_token_counts) if filtered_token_counts else 0,
-                        "max_tokens": max(filtered_token_counts) if filtered_token_counts else 0,
-                        "min_tokens": min(filtered_token_counts) if filtered_token_counts else 0
+                        "full_solution": problem_full_token_counts,
+                        "after_think": problem_after_think_token_counts
                     })
                 
-                # 16384 토큰을 넘는 instance는 평균 계산에서 제외
-                filtered_instances = [inst for inst in instance_token_counts if inst.get("total_instance_tokens", 0) <= 16384]
-                # 각 solution의 토큰 수가 16384을 넘는 경우도 제외
-                all_tokens = [t for inst in filtered_instances for t in inst["token_counts"] if t <= 16384]
-                
-                # 검증: all_tokens에 16384을 넘는 값이 있는지 확인
-                if all_tokens:
-                    max_token_value = max(all_tokens)
-                    if max_token_value > 16384:
-                        logger.warning(f"경고: all_tokens에 16384을 넘는 값이 있습니다: {max_token_value}")
-                        # 16384을 넘는 값 제거
-                        all_tokens = [t for t in all_tokens if t <= 16384]
-                
                 analysis_results["aggllm_token_distribution"] = {
-                    "instance_level": instance_token_counts,
-                    "dataset_level": {
-                        "total_instances": len(instance_token_counts),
-                        "filtered_instances": len(filtered_instances),
-                        "excluded_instances": len(instance_token_counts) - len(filtered_instances),
-                        "total_solutions": len(all_tokens),
-                        "avg_tokens": sum(all_tokens) / len(all_tokens) if all_tokens else 0,
-                        "max_tokens": max(all_tokens) if all_tokens else 0,
-                        "min_tokens": min(all_tokens) if all_tokens else 0,
-                        "median_tokens": sorted(all_tokens)[len(all_tokens)//2] if all_tokens else 0
-                    }
+                    "full_solution": calculate_stats(instance_token_counts, "full_solution"),
+                    "after_think": calculate_stats(instance_token_counts, "after_think"),
+                    "instance_level": instance_token_counts
                 }
                 
-                # 최종 검증
-                if all_tokens and analysis_results["aggllm_token_distribution"]["dataset_level"]["max_tokens"] > 16384:
-                    logger.error(f"오류: dataset_level max_tokens가 16384을 넘습니다: {analysis_results['aggllm_token_distribution']['dataset_level']['max_tokens']}")
-                    analysis_results["aggllm_token_distribution"]["dataset_level"]["max_tokens"] = max([t for t in all_tokens if t <= 16384]) if all_tokens else 0
-                logger.info(f"AggLLM 분석 완료: {len(instance_token_counts)}개 인스턴스, 평균 {analysis_results['aggllm_token_distribution']['dataset_level']['avg_tokens']:.1f} 토큰")
+                logger.info(f"AggLLM 분석 완료: {len(instance_token_counts)}개 인스턴스")
+                logger.info(f"Full Solution 평균: {analysis_results['aggllm_token_distribution']['full_solution'].get('avg_tokens', 0):.1f}")
+                logger.info(f"After Think 평균: {analysis_results['aggllm_token_distribution']['after_think'].get('avg_tokens', 0):.1f}")
             
             # 분석 결과 저장
             analysis_path = os.path.join(
@@ -638,7 +658,7 @@ def main(cfg: DictConfig) -> None:
                 
                 # Baseline 결과 로드
                 baseline_path = os.path.join(
-                    results_dir,
+                    base_results_dir,
                     f"{dataset_safe_name}_baseline_generated.json"
                 )
                 
@@ -653,7 +673,7 @@ def main(cfg: DictConfig) -> None:
                 
                 # 각 그룹 크기별로 Baseline 관련 inference 실행
                 for group_size in group_sizes:
-                    max_groups = None  # 각 그룹 크기별로 최대 4개 그룹만 사용
+                    max_groups = 32  # 각 그룹 크기별로 최대 4개 그룹만 사용
                     
                     logger.info("=" * 60)
                     logger.info(f"Baseline 관련 inference - 그룹 크기 {group_size}")
@@ -690,7 +710,7 @@ def main(cfg: DictConfig) -> None:
                         filtered_groups, filtered_count = filter_groups_by_token_length(
                             solution_groups,
                             baseline_tokenizer,
-                            aggregation_prompt_template,
+                            aggregation_prompt_template_with_conf,
                             problem_text,
                             max_tokens=eval_config.filter_max_tokens,
                             enable_thinking=enable_thinking,
@@ -704,6 +724,7 @@ def main(cfg: DictConfig) -> None:
                         for group in filtered_groups:
                             correct_count = count_correct_solutions(group, ground_truth, math_verifier)
                             group_sizes_str = ",".join(str(len(g)) for g in filtered_groups)
+                            majority_voting_answer = get_majority_voting_answer(group)
                             
                             aggregation_requests.append({
                                 "problem_id": problem_id,
@@ -711,17 +732,29 @@ def main(cfg: DictConfig) -> None:
                                 "ground_truth": ground_truth,
                                 "solutions": group,
                                 "correct_count": correct_count,
-                                "group_sizes": group_sizes_str
+                                "group_sizes": group_sizes_str,
+                                "majority_voting_answer": majority_voting_answer,
+                                "is_majority_voting_correct": math_verifier.verify_answer(majority_voting_answer, ground_truth) if majority_voting_answer else False
                             })
                     
                     if aggregation_requests:
                             logger.info(f"총 {len(aggregation_requests)}개 aggregation 요청 준비 완료")
                             
+                            # Expand requests for n=4 equivalent
+                            expanded_requests = []
+                            for req in aggregation_requests:
+                                for i in range(4):
+                                    r = req.copy()
+                                    r['repeat_idx'] = i
+                                    expanded_requests.append(r)
+                            
+                            logger.info(f"Expanded requests: {len(expanded_requests)} (Original: {len(aggregation_requests)} * 4)")
+
                             # 배치로 프롬프트 준비 (confidence 포함)
                             formatted_prompts, prompt_texts = prepare_aggregation_prompts_batch(
                                 baseline_tokenizer,
-                                aggregation_requests,
-                                aggregation_prompt_template,
+                                expanded_requests,
+                                aggregation_prompt_template_with_conf,
                                 enable_thinking,
                                 include_confidence=True
                             )
@@ -733,6 +766,7 @@ def main(cfg: DictConfig) -> None:
                                 top_p=eval_config.get("top_p", 0.8),
                                 top_k=eval_config.get("top_k", 20),
                                 min_p=eval_config.get("min_p", 0.0),
+                                n=1,
                             )
                             
                             # 배치로 생성
@@ -742,18 +776,21 @@ def main(cfg: DictConfig) -> None:
                             
                             # 결과 처리
                             for idx, output in enumerate(outputs):
-                                req = aggregation_requests[idx]
+                                req = expanded_requests[idx]
                                 agg_text = output.outputs[0].text
                                 parsed_content = extract_content(agg_text)
                                 agg_answer = math_verifier.extract_final_answer_from_content(parsed_content)
                                 
                                 aggregation_results["baseline_to_baseline_aggregation"].append({
                                     "problem_id": req["problem_id"],
+                                    "repeat_idx": req["repeat_idx"],
                                     "problem_text": req["problem_text"],
                                     "ground_truth": req["ground_truth"],
                                     "prompt_text": prompt_texts[idx],
                                     "num_solutions": len(req["solutions"]),
                                     "correct_solutions_count": req["correct_count"],
+                                    "majority_voting_answer": req["majority_voting_answer"],
+                                    "is_majority_voting_correct": req["is_majority_voting_correct"],
                                     "generated_text": agg_text,
                                     "parsed_content": parsed_content,
                                     "final_answer": agg_answer,
@@ -767,8 +804,8 @@ def main(cfg: DictConfig) -> None:
                             # 배치로 프롬프트 준비 (confidence 제외)
                             formatted_prompts, prompt_texts = prepare_aggregation_prompts_batch(
                                 baseline_tokenizer,
-                                aggregation_requests,
-                                aggregation_prompt_template,
+                                expanded_requests,
+                                aggregation_prompt_template_without_conf,
                                 enable_thinking,
                                 include_confidence=False
                             )
@@ -780,18 +817,21 @@ def main(cfg: DictConfig) -> None:
                             
                             # 결과 처리
                             for idx, output in enumerate(outputs):
-                                req = aggregation_requests[idx]
+                                req = expanded_requests[idx]
                                 agg_text = output.outputs[0].text
                                 parsed_content = extract_content(agg_text)
                                 agg_answer = math_verifier.extract_final_answer_from_content(parsed_content)
                                 
                                 aggregation_results["baseline_to_baseline_aggregation_without_confidence"].append({
                                     "problem_id": req["problem_id"],
+                                    "repeat_idx": req["repeat_idx"],
                                     "problem_text": req["problem_text"],
                                     "ground_truth": req["ground_truth"],
                                     "prompt_text": prompt_texts[idx],
                                     "num_solutions": len(req["solutions"]),
                                     "correct_solutions_count": req["correct_count"],
+                                    "majority_voting_answer": req["majority_voting_answer"],
+                                    "is_majority_voting_correct": req["is_majority_voting_correct"],
                                     "generated_text": agg_text,
                                     "parsed_content": parsed_content,
                                     "final_answer": agg_answer,
@@ -887,6 +927,7 @@ def main(cfg: DictConfig) -> None:
         if aggllm_model_path:
             logger.info("=" * 60)
             logger.info("AggLLM 모델 로드 중...")
+            # logger.info("aggllm_model_path: ", aggllm_model_path)
             logger.info("=" * 60)
             aggllm_tokenizer = AutoTokenizer.from_pretrained(
                 cfg.model.base_model,
@@ -950,7 +991,7 @@ def main(cfg: DictConfig) -> None:
                 
                 # Baseline 결과 로드
                 baseline_path = os.path.join(
-                    results_dir,
+                    base_results_dir,
                     f"{dataset_safe_name}_baseline_generated.json"
                 )
                 
@@ -962,7 +1003,7 @@ def main(cfg: DictConfig) -> None:
                 
                 # AggLLM 결과 로드
                 aggllm_path = os.path.join(
-                    results_dir,
+                    base_results_dir,
                     f"{dataset_safe_name}_aggllm_generated.json"
                 )
                 
@@ -978,7 +1019,7 @@ def main(cfg: DictConfig) -> None:
                 
                 # 각 그룹 크기별로 AggLLM 관련 inference 실행
                 for group_size in group_sizes:
-                    max_groups = None
+                    max_groups = 32
                     
                     logger.info("=" * 60)
                     logger.info(f"AggLLM 관련 inference - 그룹 크기 {group_size}")
@@ -1004,18 +1045,27 @@ def main(cfg: DictConfig) -> None:
                         aggregation_path = baseline_aggregation_path
                     
                     # 기존 Baseline 결과 로드 (있으면)
-                    if os.path.exists(baseline_aggregation_path):
+                    # skip_baseline이 True이고 checkpoint_num이 있으면 (즉, 별도 파일로 저장하는 경우)
+                    # Baseline 결과를 복사하지 않음
+                    should_load_baseline = os.path.exists(baseline_aggregation_path)
+                    if skip_baseline and checkpoint_num is not None:
+                        should_load_baseline = False
+                    
+                    if should_load_baseline:
                         with open(baseline_aggregation_path, 'r', encoding='utf-8') as f:
                             formatted_results = json.load(f)
                     else:
                         formatted_results = {
                             "dataset_name": dataset_path,
                             "group_size": group_size,
-                            "baseline_to_baseline_aggregation": {},
-                            "baseline_to_baseline_aggregation_without_confidence": {},
                             "baseline_to_aggllm_aggregation": {},
                             "aggllm_to_aggllm_aggregation": {}
                         }
+                        
+                        # Baseline 결과 키는 skip_baseline이 아닐 때만 초기화
+                        if not skip_baseline:
+                            formatted_results["baseline_to_baseline_aggregation"] = {}
+                            formatted_results["baseline_to_baseline_aggregation_without_confidence"] = {}
                     
                     # 결과 초기화 (AggLLM 관련만)
                     aggregation_results = {
@@ -1042,11 +1092,33 @@ def main(cfg: DictConfig) -> None:
                                 max_groups=max_groups
                             )
 
+                            # Baseline 모델에 대한 경우 confidence를 사용하지 않음
+                            if "baseline" in eval_config.experiment_name:
+                                current_aggregation_prompt_template = aggregation_prompt_template_without_conf
+                                include_confidence_for_filter = False
+                            else:
+                                current_aggregation_prompt_template = aggregation_prompt_template_with_conf
+                                include_confidence_for_filter = True
+                                
+                            logger.info(f"eval_config.experiment_name: {eval_config.experiment_name}")
+                            logger.info(f"include_confidence_for_filter: {include_confidence_for_filter}")
+                            
                             # Group 단위로 토큰 수 필터링 (baseline tokenizer 사용)
                             filtered_groups, filtered_count = filter_groups_by_token_length(
                                 solution_groups,
                                 baseline_tokenizer,
-                                aggregation_prompt_template,
+                                current_aggregation_prompt_template,
+                                problem_text,
+                                max_tokens=eval_config.filter_max_tokens,
+                                enable_thinking=enable_thinking,
+                                include_confidence=include_confidence_for_filter
+                            )
+
+                            # Group 단위로 토큰 수 필터링 (baseline tokenizer 사용)
+                            filtered_groups, filtered_count = filter_groups_by_token_length(
+                                solution_groups,
+                                baseline_tokenizer,
+                                aggregation_prompt_template_with_conf,
                                 problem_text,
                                 max_tokens=eval_config.filter_max_tokens,
                                 enable_thinking=enable_thinking,
@@ -1060,28 +1132,41 @@ def main(cfg: DictConfig) -> None:
                             for group in filtered_groups:
                                 correct_count = count_correct_solutions(group, ground_truth, math_verifier)
                                 group_sizes_str = ",".join(str(len(g)) for g in filtered_groups)
-                                
+                                majority_voting_answer = get_majority_voting_answer(group)
+
                                 aggregation_requests.append({
                                     "problem_id": problem_id,
                                     "problem_text": problem_text,
                                     "ground_truth": ground_truth,
                                     "solutions": group,
                                     "correct_count": correct_count,
-                                    "group_sizes": group_sizes_str
+                                    "group_sizes": group_sizes_str,
+                                    "majority_voting_answer": majority_voting_answer,
+                                    "is_majority_voting_correct": math_verifier.verify_answer(majority_voting_answer, ground_truth) if majority_voting_answer else False
                                 })
                         
                         if aggregation_requests:
                             logger.info(f"총 {len(aggregation_requests)}개 aggregation 요청 준비 완료")
+                            # Expand requests for n=4 equivalent
+                            expanded_requests = []
+                            for req in aggregation_requests:
+                                for i in range(4):
+                                    r = req.copy()
+                                    r['repeat_idx'] = i
+                                    expanded_requests.append(r)
                             
-                            # 배치로 프롬프트 준비 (confidence 포함)
+                            logger.info(f"Expanded requests: {len(expanded_requests)} (Original: {len(aggregation_requests)} * 4)")
+
+                            # 배치로 프롬프트 준비 (with confidence)
+                            # Baseline 솔루션을 사용하므로 baseline_tokenizer 사용
                             formatted_prompts, prompt_texts = prepare_aggregation_prompts_batch(
-                                aggllm_tokenizer,
-                                aggregation_requests,
-                                aggregation_prompt_template,
+                                baseline_tokenizer,
+                                expanded_requests,
+                                aggregation_prompt_template_with_conf,
                                 enable_thinking,
                                 include_confidence=True
                             )
-                            
+
                             # SamplingParams 설정
                             sampling_params = SamplingParams(
                                 temperature=eval_config.temperature,
@@ -1089,27 +1174,31 @@ def main(cfg: DictConfig) -> None:
                                 top_p=eval_config.get("top_p", 0.8),
                                 top_k=eval_config.get("top_k", 20),
                                 min_p=eval_config.get("min_p", 0.0),
+                                n=1,
                             )
-                            
+
                             # 배치로 생성
                             logger.info("배치 생성 시작...")
                             outputs = aggllm_llm.generate(formatted_prompts, sampling_params)
                             logger.info("배치 생성 완료")
-                            
+
                             # 결과 처리
                             for idx, output in enumerate(outputs):
-                                req = aggregation_requests[idx]
+                                req = expanded_requests[idx]
                                 agg_text = output.outputs[0].text
                                 parsed_content = extract_content(agg_text)
                                 agg_answer = math_verifier.extract_final_answer_from_content(parsed_content)
-                                
+
                                 aggregation_results["baseline_to_aggllm_aggregation"].append({
                                     "problem_id": req["problem_id"],
+                                    "repeat_idx": req["repeat_idx"],
                                     "problem_text": req["problem_text"],
                                     "ground_truth": req["ground_truth"],
                                     "prompt_text": prompt_texts[idx],
                                     "num_solutions": len(req["solutions"]),
                                     "correct_solutions_count": req["correct_count"],
+                                    "majority_voting_answer": req["majority_voting_answer"],
+                                    "is_majority_voting_correct": req["is_majority_voting_correct"],
                                     "generated_text": agg_text,
                                     "parsed_content": parsed_content,
                                     "final_answer": agg_answer,
@@ -1140,7 +1229,7 @@ def main(cfg: DictConfig) -> None:
                             filtered_groups, filtered_count = filter_groups_by_token_length(
                                 solution_groups,
                                 aggllm_tokenizer,
-                                aggregation_prompt_template,
+                                aggregation_prompt_template_with_conf,
                                 problem_text,
                                 max_tokens=eval_config.filter_max_tokens,
                                 enable_thinking=enable_thinking,
@@ -1154,24 +1243,37 @@ def main(cfg: DictConfig) -> None:
                             for group in filtered_groups:
                                 correct_count = count_correct_solutions(group, ground_truth, math_verifier)
                                 group_sizes_str = ",".join(str(len(g)) for g in filtered_groups)
-                                
+                                majority_voting_answer = get_majority_voting_answer(group)
+
                                 aggregation_requests.append({
                                     "problem_id": problem_id,
                                     "problem_text": problem_text,
                                     "ground_truth": ground_truth,
                                     "solutions": group,
                                     "correct_count": correct_count,
-                                    "group_sizes": group_sizes_str
+                                    "group_sizes": group_sizes_str,
+                                    "majority_voting_answer": majority_voting_answer,
+                                    "is_majority_voting_correct": math_verifier.verify_answer(majority_voting_answer, ground_truth) if majority_voting_answer else False
                                 })
                         
                         if aggregation_requests:
                             logger.info(f"총 {len(aggregation_requests)}개 aggregation 요청 준비 완료")
                             
-                            # 배치로 프롬프트 준비
+                            # Expand requests for n=4 equivalent
+                            expanded_requests = []
+                            for req in aggregation_requests:
+                                for i in range(4):
+                                    r = req.copy()
+                                    r['repeat_idx'] = i
+                                    expanded_requests.append(r)
+                            
+                            logger.info(f"Expanded requests: {len(expanded_requests)} (Original: {len(aggregation_requests)} * 4)")
+
+                            # 배치로 프롬프트 준비 (with confidence)
                             formatted_prompts, prompt_texts = prepare_aggregation_prompts_batch(
                                 aggllm_tokenizer,
-                                aggregation_requests,
-                                aggregation_prompt_template,
+                                expanded_requests,
+                                aggregation_prompt_template_with_conf,
                                 enable_thinking,
                                 include_confidence=True
                             )
@@ -1183,6 +1285,7 @@ def main(cfg: DictConfig) -> None:
                                 top_p=eval_config.get("top_p", 0.8),
                                 top_k=eval_config.get("top_k", 20),
                                 min_p=eval_config.get("min_p", 0.0),
+                                n=1,
                             )
                             
                             # 배치로 생성
@@ -1192,18 +1295,21 @@ def main(cfg: DictConfig) -> None:
                             
                             # 결과 처리
                             for idx, output in enumerate(outputs):
-                                req = aggregation_requests[idx]
+                                req = expanded_requests[idx]
                                 agg_text = output.outputs[0].text
                                 parsed_content = extract_content(agg_text)
                                 agg_answer = math_verifier.extract_final_answer_from_content(parsed_content)
                                 
                                 aggregation_results["aggllm_to_aggllm_aggregation"].append({
                                     "problem_id": req["problem_id"],
+                                    "repeat_idx": req["repeat_idx"],
                                     "problem_text": req["problem_text"],
                                     "ground_truth": req["ground_truth"],
                                     "prompt_text": prompt_texts[idx],
                                     "num_solutions": len(req["solutions"]),
                                     "correct_solutions_count": req["correct_count"],
+                                    "majority_voting_answer": req["majority_voting_answer"],
+                                    "is_majority_voting_correct": req["is_majority_voting_correct"],
                                     "generated_text": agg_text,
                                     "parsed_content": parsed_content,
                                     "final_answer": agg_answer,
@@ -1221,8 +1327,8 @@ def main(cfg: DictConfig) -> None:
                     # Evaluation 단계 (이 그룹 크기에 대해)
                     if do_evaluation:
                         # 평가 수행 (is_correct가 None인 경우에만)
-                        for key in ["baseline_to_baseline_aggregation", "baseline_to_baseline_aggregation_without_confidence",
-                                   "baseline_to_aggllm_aggregation", "aggllm_to_aggllm_aggregation"]:
+                        target_keys = [k for k in formatted_results.keys() if "aggregation" in k]
+                        for key in target_keys:
                             results_dict = formatted_results.get(key, {})
                             if isinstance(results_dict, dict):
                                 for problem_id, problem_data in results_dict.items():
@@ -1238,8 +1344,8 @@ def main(cfg: DictConfig) -> None:
                     
                     # 정확도 계산 및 최종 저장
                     summary = {}
-                    for key in ["baseline_to_baseline_aggregation", "baseline_to_baseline_aggregation_without_confidence",
-                               "baseline_to_aggllm_aggregation", "aggllm_to_aggllm_aggregation"]:
+                    target_keys = [k for k in formatted_results.keys() if "aggregation" in k]
+                    for key in target_keys:
                         results_dict = formatted_results.get(key, {})
                         if isinstance(results_dict, dict):
                             total = 0
@@ -1312,8 +1418,8 @@ def main(cfg: DictConfig) -> None:
                         formatted_results = json.load(f)
                     
                     # 평가 수행 (is_correct가 None인 경우에만)
-                    for key in ["baseline_to_baseline_aggregation", "baseline_to_baseline_aggregation_without_confidence",
-                               "baseline_to_aggllm_aggregation", "aggllm_to_aggllm_aggregation"]:
+                    target_keys = [k for k in formatted_results.keys() if "aggregation" in k]
+                    for key in target_keys:
                         results_dict = formatted_results.get(key, {})
                         if isinstance(results_dict, dict):
                             for problem_id, problem_data in results_dict.items():
@@ -1329,8 +1435,8 @@ def main(cfg: DictConfig) -> None:
                     
                     # 정확도 재계산
                     summary = {}
-                    for key in ["baseline_to_baseline_aggregation", "baseline_to_baseline_aggregation_without_confidence",
-                               "baseline_to_aggllm_aggregation", "aggllm_to_aggllm_aggregation"]:
+                    target_keys = [k for k in formatted_results.keys() if "aggregation" in k]
+                    for key in target_keys:
                         results_dict = formatted_results.get(key, {})
                         if isinstance(results_dict, dict):
                             total = 0

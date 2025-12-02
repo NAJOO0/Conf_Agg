@@ -429,7 +429,7 @@ def main(cfg: DictConfig) -> None:
     logger.info("🚀 Stage 4-1: Solution 생성 시작")
 
     eval_config = cfg.evaluation.benchmarks.evaluation
-    enable_thinking = eval_config.get("enable_thinking", False)
+    enable_thinking = eval_config.get("enable_thinking", True)
 
     # 디렉토리 생성
     os.makedirs(cfg.paths.output_dir, exist_ok=True)
@@ -503,7 +503,7 @@ def main(cfg: DictConfig) -> None:
         baseline_llm, baseline_tokenizer = load_baseline_model(
             model_name=cfg.model.base_model,
             gpu_memory_utilization=eval_config.get("gpu_memory_utilization", 0.9),
-            max_model_len=eval_config.get("max_model_len", eval_config.max_tokens + 8192)
+            max_model_len=eval_config.get("max_model_len", eval_config.max_tokens + 16384)
         )
         
         # 각 데이터셋에 대해 생성
@@ -527,7 +527,7 @@ def main(cfg: DictConfig) -> None:
                     tokenizer=baseline_tokenizer,
                     problems=problems,
                     output_path=baseline_output_path,
-                    num_solutions=128,
+                    num_solutions=64,
                     base_instruction=base_instruction,
                     enable_thinking=enable_thinking,
                     temperature=eval_config.temperature,
@@ -594,7 +594,7 @@ def main(cfg: DictConfig) -> None:
                         tokenizer=aggllm_tokenizer,
                         problems=problems,
                         output_path=aggllm_output_path,
-                        num_solutions=128,
+                        num_solutions=64,
                         base_instruction=base_instruction,
                         enable_thinking=enable_thinking,
                         temperature=eval_config.temperature,

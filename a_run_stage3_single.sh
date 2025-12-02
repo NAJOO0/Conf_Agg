@@ -1,7 +1,8 @@
 #!/bin/bash
 # DDP 없이 단일 프로세스로 GPU 2개를 사용하여 vLLM Colocate 모드로 실행
-# 사용법: ./run_stage3_single_colocate.sh [GPU_IDs]
-# 예시: ./run_stage3_single_colocate.sh 0,1 (기본값)
+# 사용법: ./a_run_stage3_single.sh [GPU_IDs] [WANDB_NAME]
+# 예시: ./a_run_stage3_single.sh 1 "my_experiment_name"
+#       ./a_run_stage3_single.sh 1  (WandB 이름 없이 실행)
 export WANDB_API_KEY=cef6d541e9983fb4a433b2e72a63997ed465e0ac
 # 에러 처리
 set -o pipefail
@@ -13,6 +14,9 @@ cd "$SCRIPT_DIR"
 # GPU 설정 (인자가 없으면 기본값 0,1 사용)
 GPU_IDS=${1:-"1"}
 NUM_GPUS=$(echo $GPU_IDS | tr ',' '\n' | wc -l)
+
+# WandB 이름 설정 (두 번째 인자, 선택사항)
+WANDB_NAME=${2:-"4000_32_naive_uniform"}
 
 # 기본 로그 디렉토리
 LOG_DIR="${LOG_DIR:-logs}"
@@ -29,6 +33,9 @@ echo "=========================================="
 echo "   GPU IDs: ${GPU_IDS}"
 echo "   모드: 단일 프로세스 (DDP 없음)"
 echo "   vLLM: Colocate (GPU ${NUM_GPUS}개 활용)"
+if [ -n "$WANDB_NAME" ]; then
+    echo "   WandB 이름: ${WANDB_NAME}"
+fi
 echo "   로그 파일: ${LOG_FILE}"
 echo ""
 
@@ -90,6 +97,12 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
 unset RANK
 unset LOCAL_RANK
 unset WORLD_SIZE
+
+# WandB 이름 설정 (지정된 경우)
+if [ -n "$WANDB_NAME" ]; then
+    export WANDB_NAME="$WANDB_NAME"
+    echo "   WandB 이름: ${WANDB_NAME}"
+fi
 
 # 실행 시작 시간 기록
 echo "시작 시간: $(date)" >> "$LOG_FILE"

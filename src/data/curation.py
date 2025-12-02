@@ -52,14 +52,16 @@ class DataCurator:
     def __init__(
         self,
         strategy: str = "curriculum",
+        enable_thinking: bool = False,
         easy_sample_percentage: int = 50,
         num_sets_per_problem: int = 4,
         set_size: int = 4,
         timeout: int = 30,
-        confidence_key: str = "tail_confidence",
+        confidence_key: str = "bottom_10_percent_confidence",
         fill_insufficient_with_sampling: bool = True,
         tokenizer_model: str = "Qwen/Qwen3-1.7B",
         easy_threshold: float = 0.5,
+        order_strategy: str = "hard_first",
         prompt_template: str = 
             (
                 "You are an expert mathematician and critical analyst.\n"
@@ -95,22 +97,29 @@ class DataCurator:
                 - False: 있는 응답만 사용하여 세트 수가 줄어듦
             tokenizer_model: 토크나이저 모델 이름 (default: "Qwen/Qwen3-1.7B")
             easy_threshold: Easy/Hard 분류 임계값 (default: 0.5, 정답률 >= 이 값이면 Easy)
+            order_strategy: 데이터 순서 전략 (default: "hard_first")
+                - "hard_first": Hard 세트 먼저, Easy 세트 나중
+                - "easy_first": Easy 세트 먼저, Hard 세트 나중
+                - "shuffle": Hard와 Easy를 무작위로 섞기
             prompt_template: 프롬프트 템플릿 문자열
         """
         self.strategy = strategy
         self.easy_sample_percentage = easy_sample_percentage
         self.num_sets_per_problem = num_sets_per_problem
         self.set_size = set_size
+        self.enable_thinking = enable_thinking
         self.verifier = MathVerifier(timeout=timeout)
         self.confidence_key = confidence_key
         self.fill_insufficient_with_sampling = fill_insufficient_with_sampling
         self.easy_threshold = easy_threshold
+        self.order_strategy = order_strategy
         self.prompt_template = prompt_template
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_model)
         # 시드 설정
         random.seed(42)
         np.random.seed(42)
-    
+        logger.info(f"Enable Thinking: {self.enable_thinking}")
+        logger.info(f"Order Strategy: {self.order_strategy}")
     def classify_hard_easy_sets(
         self,
         sets: List[Dict[str, Any]],
@@ -418,11 +427,12 @@ class DataCurator:
                         )
                 solutions_text = "\n".join(lines)
                 prompt = self.prompt_template.format(problem=problem_text, solutions=solutions_text)
+                
                 prompt = self.tokenizer.apply_chat_template(
                     [{"role": "user", "content": prompt}],
                     tokenize=False,
                     add_generation_prompt=True,
-                    enable_thinking=False,
+                    enable_thinking=self.enable_thinking,
                 )
                 # 세트 정보 생성(호환 필드 유지)
                 set_info = {
@@ -435,7 +445,7 @@ class DataCurator:
                     'selected_confidence_key': self.confidence_key,
                     'selected_confidence': selected_conf_values,
                     # enable_thinking: Stage 3에서 chat template 적용 시 사용
-                    'enable_thinking': False,
+                    'enable_thinking': self.enable_thinking,
                     # 기존 파이프라인 호환을 위해 유지
                     'responses': [r.get('generated_text', '') for r in response_set],
                     'confidence_scores': {
@@ -482,7 +492,36 @@ class DataCurator:
             # Easy가 부족하면 Hard를 줄여서 비율 맞춤
             # Easy = Hard * 0.5 이므로, Hard = Easy * 2
             num_hard_target = int(len(easy_sets) * 100 / self.easy_sample_percentage)
-            selected_hard = random.sample(hard_sets, min(num_hard_target, len(hard_sets)))
+            
+            # Hard 세트 줄이기 전략: Zero-correct (정답 0개) 우선 제거
+            # 1. Zero-correct 세트와 나머지 세트 분리
+            zero_correct_sets = []
+            other_hard_sets = []
+            
+            for s in hard_sets:
+                # solutions 내의 정답 개수 계산
+                correct_count = 0
+                for sol in s['solutions']:
+                    if self.verifier.verify_answer(sol.get('final_answer', ''), s['ground_truth']):
+                        correct_count += 1
+                
+                if correct_count == 0:
+                    zero_correct_sets.append(s)
+                else:
+                    other_hard_sets.append(s)
+            
+            logger.info(f"Hard 세트 분석: Zero-correct {len(zero_correct_sets)}개, Others {len(other_hard_sets)}개")
+            
+            if len(other_hard_sets) >= num_hard_target:
+                # Others만으로 충분하면 Others에서 샘플링 (Zero-correct는 모두 버림)
+                selected_hard = random.sample(other_hard_sets, num_hard_target)
+                logger.info(f"Hard 조정: Others에서 {num_hard_target}개 선택, Zero-correct {len(zero_correct_sets)}개 제거")
+            else:
+                # Others를 모두 포함하고 부족분은 Zero-correct에서 채움
+                needed_from_zero = num_hard_target - len(other_hard_sets)
+                selected_hard = other_hard_sets + random.sample(zero_correct_sets, min(needed_from_zero, len(zero_correct_sets)))
+                logger.info(f"Hard 조정: Others {len(other_hard_sets)}개 모두 선택, Zero-correct에서 {min(needed_from_zero, len(zero_correct_sets))}개 추가")
+
             selected_easy = easy_sets.copy()
             logger.info(
                 f"Easy가 부족하여 Hard를 조정: "
@@ -491,8 +530,37 @@ class DataCurator:
             )
         else:
             # Easy가 충분하면 Easy를 줄여서 비율 맞춤
+            
+            # Easy 세트 줄이기 전략: All-correct (정답 set_size개) 우선 제거
+            # 1. All-correct 세트와 나머지 세트 분리
+            all_correct_sets = []
+            other_easy_sets = []
+            
+            for s in easy_sets:
+                # solutions 내의 정답 개수 계산
+                correct_count = 0
+                for sol in s['solutions']:
+                    if self.verifier.verify_answer(sol.get('final_answer', ''), s['ground_truth']):
+                        correct_count += 1
+                
+                if correct_count == self.set_size:
+                    all_correct_sets.append(s)
+                else:
+                    other_easy_sets.append(s)
+            
+            logger.info(f"Easy 세트 분석: All-correct {len(all_correct_sets)}개, Others {len(other_easy_sets)}개")
+            
+            if len(other_easy_sets) >= num_easy_target:
+                # Others만으로 충분하면 Others에서 샘플링 (All-correct는 모두 버림)
+                selected_easy = random.sample(other_easy_sets, num_easy_target)
+                logger.info(f"Easy 조정: Others에서 {num_easy_target}개 선택, All-correct {len(all_correct_sets)}개 제거")
+            else:
+                # Others를 모두 포함하고 부족분은 All-correct에서 채움
+                needed_from_all = num_easy_target - len(other_easy_sets)
+                selected_easy = other_easy_sets + random.sample(all_correct_sets, needed_from_all)
+                logger.info(f"Easy 조정: Others {len(other_easy_sets)}개 모두 선택, All-correct에서 {needed_from_all}개 추가")
+
             selected_hard = hard_sets.copy()
-            selected_easy = random.sample(easy_sets, num_easy_target)
             logger.info(
                 f"Easy가 충분하여 Easy를 조정: "
                 f"Hard {len(hard_sets)}개 유지, "
@@ -505,49 +573,68 @@ class DataCurator:
         else:
             logger.info("Hard 세트가 없어 비율 계산 불가")
         
-        return selected_hard + selected_easy
+        # 순서 전략에 따라 데이터 정렬
+        if self.order_strategy == "hard_first":
+            # Hard 먼저, Easy 나중 (기본 동작)
+            curated_sets = selected_hard + selected_easy
+            logger.info(f"데이터 순서: Hard 먼저 ({len(selected_hard)}개), Easy 나중 ({len(selected_easy)}개)")
+        elif self.order_strategy == "easy_first":
+            # Easy 먼저, Hard 나중
+            curated_sets = selected_easy + selected_hard
+            logger.info(f"데이터 순서: Easy 먼저 ({len(selected_easy)}개), Hard 나중 ({len(selected_hard)}개)")
+        elif self.order_strategy == "shuffle":
+            # Hard와 Easy를 무작위로 섞기
+            curated_sets = selected_hard + selected_easy
+            random.shuffle(curated_sets)
+            logger.info(f"데이터 순서: 무작위로 섞임 (총 {len(curated_sets)}개)")
+        else:
+            # 기본값: hard_first
+            logger.warning(f"알 수 없는 order_strategy: {self.order_strategy}, 기본값(hard_first) 사용")
+            curated_sets = selected_hard + selected_easy
+        
+        return curated_sets
     
     def split_train_validation(
         self, 
         curated_sets: List[Dict[str, Any]], 
-        train_split: float = 0.8
+        validation_ratio: float = 0.1
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        훈련/검증 데이터로 분할합니다.
+        Train/Validation 분할 (Problem ID 기준)
         
-        Args:
-            curated_sets: 큐레이션된 세트들
-            train_split: 훈련 데이터 비율
+        주의: Data Leakage를 방지하기 위해 반드시 Problem ID 기준으로 분할해야 함.
+        같은 문제의 변형들이 Train과 Validation에 섞이면 안 됨.
         
-        Returns:
-            (train_sets, validation_sets) 튜플
+        수정: 분할 후에도 curated_sets의 원래 순서(Hard/Easy 정렬)를 유지함.
         """
-        logger.info(f"훈련/검증 데이터 분할 (훈련 비율: {train_split})")
+        logger.info(f"Train/Validation 분할 시작 (비율: {validation_ratio})")
         
-        # 문제별로 그룹화하여 분할
-        problem_sets = defaultdict(list)
-        for set_data in curated_sets:
-            problem_sets[set_data['problem_id']].append(set_data)
+        # 1. Problem ID 수집
+        problem_ids = list(set(item['problem_id'] for item in curated_sets))
+        logger.info(f"총 문제 개수: {len(problem_ids)}")
         
-        problems = list(problem_sets.keys())
-        random.shuffle(problems)
+        # 2. Problem ID 섞기 (어떤 문제가 Train/Val로 갈지 결정)
+        random.shuffle(problem_ids)
         
-        split_idx = int(len(problems) * train_split)
-        train_problems = problems[:split_idx]
-        validation_problems = problems[split_idx:]
+        # 3. 분할 지점 계산
+        split_idx = int(len(problem_ids) * (1 - validation_ratio))
+        train_problem_ids = set(problem_ids[:split_idx])
+        valid_problem_ids = set(problem_ids[split_idx:])
         
+        logger.info(f"Train 문제: {len(train_problem_ids)}개, Validation 문제: {len(valid_problem_ids)}개")
+        
+        # 4. 원래 순서를 유지하며 필터링
         train_sets = []
-        validation_sets = []
+        valid_sets = []
         
-        for problem in train_problems:
-            train_sets.extend(problem_sets[problem])
+        for item in curated_sets:
+            if item['problem_id'] in train_problem_ids:
+                train_sets.append(item)
+            else:
+                valid_sets.append(item)
         
-        for problem in validation_problems:
-            validation_sets.extend(problem_sets[problem])
-        
-        logger.info(f"훈련 세트: {len(train_sets)}개, 검증 세트: {len(validation_sets)}개")
-        
-        return train_sets, validation_sets
+        logger.info(f"분할 완료: Train {len(train_sets)}개, Validation {len(valid_sets)}개")
+        return train_sets, valid_sets
     
     def curate_data(
         self, 
@@ -660,7 +747,7 @@ class DataCurator:
                 curated_sets = self.apply_curation_strategy(hard_sets, easy_sets)
 
                 # 훈련/검증 분할
-                train_sets, validation_sets = self.split_train_validation(curated_sets, train_split)
+                train_sets, validation_sets = self.split_train_validation(curated_sets, 1.0 - train_split)
 
                 # 결과 저장 (중첩 데이터를 JSON으로 직렬화)
                 train_sets_serialized = _serialize_nested_data(train_sets)
@@ -731,7 +818,7 @@ class DataCurator:
                 curated_sets = self.apply_curation_strategy(hard_sets, easy_sets)
 
                 # 훈련/검증 분할
-                train_sets, validation_sets = self.split_train_validation(curated_sets, train_split)
+                train_sets, validation_sets = self.split_train_validation(curated_sets, 1.0 - train_split)
 
                 # set_size 정보를 각 세트에 추가
                 for train_set in train_sets:
@@ -782,7 +869,7 @@ class DataCurator:
             curated_sets = self.apply_curation_strategy(hard_sets, easy_sets)
             
             # 훈련/검증 분할
-            train_sets, validation_sets = self.split_train_validation(curated_sets, train_split)
+            train_sets, validation_sets = self.split_train_validation(curated_sets, 1.0 - train_split)
             
             # 결과 저장 (중첩 데이터를 JSON으로 직렬화)
             train_sets_serialized = _serialize_nested_data(train_sets)

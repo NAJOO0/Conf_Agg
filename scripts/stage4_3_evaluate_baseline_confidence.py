@@ -610,11 +610,13 @@ def main(cfg: DictConfig) -> None:
         return
 
     # 출력 디렉토리 설정
-    baseline_results_dir = os.path.join(cfg.paths.output_dir, "comprehensive_results")
-    baseline_results_dir = os.path.join(baseline_results_dir, "Qwen_Qwen3-1.7B_think_True")
+    baseline_results_dir = eval_config.results_dir
+    if not os.path.isabs(baseline_results_dir):
+        baseline_results_dir = os.path.join(cfg.paths.output_dir, baseline_results_dir)
     
-    results_dir = os.path.join(cfg.paths.output_dir, "comprehensive_results", prompt_variant_dir)
-    results_dir = os.path.join(results_dir, "Qwen_Qwen3-1.7B_think_True")
+    parent_dir = os.path.dirname(baseline_results_dir)
+    base_name = os.path.basename(baseline_results_dir)
+    results_dir = os.path.join(parent_dir, prompt_variant_dir, base_name)
     
     logger.info("사용 프롬프트 variant: %s", prompt_variant_key)
     logger.info("baseline_results_dir: %s", baseline_results_dir)

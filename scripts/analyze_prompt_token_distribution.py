@@ -205,7 +205,7 @@ def load_parquet_file(file_path: str) -> Optional[pd.DataFrame]:
                     if HAS_PYARROW:
                         logger.warning(f"기본 pandas read_parquet 실패: {e3}, PyArrow 직접 읽기 시도...")
                         try:
-                            table = pq.read_table(file_path, memory_map=False, columns=['prompt', 'problem_id', 'problem_text', 'ground_truth', 'set_id'])
+                            table = pq.read_table(file_path, memory_map=False, columns=['prompt', 'problem_id', 'problem_text', 'ground_truth', 'set_id', 'solutions', 'confidence_scores'])
                             df = table.to_pandas()
                             logger.info("PyArrow로 필수 컬럼만 로드 성공")
                         except Exception as e4:
@@ -474,7 +474,7 @@ def calculate_correct_solution_distribution(
             'distribution': {},
             'total_instances': 0,
             'statistics': {},
-            'hard_easy_split': {'hard': 0, 'easy': 0, 'easy_ratio': 0.0}
+            'hard_easy_split': {'hard': 0, 'easy': 0, 'easy_ratio': 0.0, 'easy_percentage': 0.0, 'threshold': easy_threshold}
         }
 
     correct_counts = []
@@ -524,7 +524,7 @@ def calculate_correct_solution_distribution(
             'distribution': {},
             'total_instances': 0,
             'statistics': {},
-            'hard_easy_split': {'hard': 0, 'easy': 0, 'easy_ratio': 0.0}
+            'hard_easy_split': {'hard': 0, 'easy': 0, 'easy_ratio': 0.0, 'easy_percentage': 0.0, 'threshold': easy_threshold}
         }
 
     # 정답 개수별 분포 계산
@@ -661,11 +661,13 @@ def calculate_filtered_distribution(
     total_filtered = sum(filtered_distribution.values())
 
     if total_filtered == 0:
+        # threshold 가져오기 (기본값: 0.5)
+        threshold = before_dist.get('hard_easy_split', {}).get('threshold', 0.5)
         return {
             'distribution': {},
             'total_instances': 0,
             'statistics': {},
-            'hard_easy_split': {'hard': 0, 'easy': 0, 'easy_ratio': 0.0}
+            'hard_easy_split': {'hard': 0, 'easy': 0, 'easy_ratio': 0.0, 'easy_percentage': 0.0, 'threshold': threshold}
         }
 
     # 통계 계산을 위해 정답 개수 리스트 생성
@@ -869,7 +871,7 @@ def visualize_distribution(
             labels.append('All')
         
         if data_to_plot:
-            bp = ax.boxplot(data_to_plot, labels=labels, patch_artist=True,
+            ax.boxplot(data_to_plot, tick_labels=labels, patch_artist=True,
                           boxprops=dict(facecolor='lightblue', alpha=0.7))
             ax.set_ylabel('Prompt Token Count')
             ax.set_title('Prompt Token Count Comparison')
@@ -919,6 +921,104 @@ def visualize_distribution(
         logger.error(f"상세 에러:\n{traceback.format_exc()}")
 
 
+def apply_balanced_sampling(
+    df: pd.DataFrame,
+    verifier: MathVerifier,
+    set_size: int = 8
+) -> pd.DataFrame:
+    """
+    정답 개수 분포에 따라 데이터 샘플링 (Balanced Sampling)
+    - 0개 정답과 set_size개 정답인 그룹을 나머지 그룹(1 ~ set_size-1)의 평균 개수로 다운샘플링
+    
+    Args:
+        df: 데이터프레임
+        verifier: 정답 검증기
+        set_size: 세트 크기
+        
+    Returns:
+        샘플링된 데이터프레임
+    """
+    logger.info("\n" + "="*60)
+    logger.info("=== Balanced Sampling 적용 ===")
+    logger.info("="*60)
+    
+    # 1. 각 행의 정답 개수 계산
+    logger.info("각 행의 정답 개수 계산 중...")
+    correct_counts = []
+    valid_indices = []
+    
+    for idx, row in df.iterrows():
+        try:
+            solutions = row['solutions']
+            if isinstance(solutions, str):
+                solutions = json.loads(solutions)
+            
+            ground_truth = row['ground_truth']
+            
+            count = 0
+            if isinstance(solutions, list):
+                for sol in solutions:
+                    if isinstance(sol, dict):
+                        if verifier.verify_answer(sol.get('final_answer', ''), ground_truth):
+                            count += 1
+            
+            correct_counts.append(count)
+            valid_indices.append(idx)
+        except Exception as e:
+            continue
+            
+    # 임시 데이터프레임 생성
+    temp_df = df.loc[valid_indices].copy()
+    temp_df['correct_count'] = correct_counts
+    
+    # 2. 중간 그룹(1 ~ set_size-1)의 평균 개수 계산
+    middle_counts = temp_df[
+        (temp_df['correct_count'] > 0) & 
+        (temp_df['correct_count'] < set_size)
+    ]
+    
+    if len(middle_counts) == 0:
+        logger.warning("⚠️ 중간 분포(1 ~ set_size-1)가 없어 Balanced Sampling을 건너뜁니다.")
+        return df
+        
+    # 각 정답 개수별 빈도 계산
+    bucket_counts = middle_counts['correct_count'].value_counts()
+    average_count = int(bucket_counts.mean())
+    logger.info(f"중간 그룹(1 ~ {set_size-1}개 정답) 통계:")
+    logger.info(f"  총 개수: {len(middle_counts)}")
+    logger.info(f"  그룹별 평균 개수: {average_count}")
+    
+    # 3. 샘플링 적용
+    final_indices = []
+    
+    # 0부터 set_size까지 각 그룹별로 처리
+    for i in range(set_size + 1):
+        bucket_df = temp_df[temp_df['correct_count'] == i]
+        count = len(bucket_df)
+        
+        if count == 0:
+            continue
+            
+        if i == 0 or i == set_size:
+            # 양극단 그룹: 평균 개수로 다운샘플링 (초과 시)
+            if count > average_count:
+                sampled = bucket_df.sample(n=average_count, random_state=42)
+                final_indices.extend(sampled.index.tolist())
+                logger.info(f"  Bucket {i} (Extreme): {count} -> {average_count} (Downsampled)")
+            else:
+                final_indices.extend(bucket_df.index.tolist())
+                logger.info(f"  Bucket {i} (Extreme): {count} (Kept all)")
+        else:
+            # 중간 그룹: 모두 유지
+            final_indices.extend(bucket_df.index.tolist())
+            logger.info(f"  Bucket {i} (Middle):  {count} (Kept all)")
+            
+    balanced_df = df.loc[final_indices].copy()
+    logger.info(f"Balanced Sampling 완료: {len(df)} -> {len(balanced_df)} ({len(balanced_df)/len(df)*100:.1f}%)")
+    
+    return balanced_df
+
+
 def main(
     train_path: str,
     validation_path: str,
@@ -927,7 +1027,9 @@ def main(
     max_input_length: Optional[int] = None,
     batch_size: int = 1000,
     num_workers: Optional[int] = None,
-    easy_threshold: float = 0.5
+    easy_threshold: float = 0.5,
+    sample_size: Optional[int] = None,
+    set_size: int = 8
 ):
     """
     메인 함수: Prompt Token Count 분포 분석
@@ -941,6 +1043,8 @@ def main(
         batch_size: 각 워커의 배치 크기 (기본값: 1000)
         num_workers: 멀티프로세싱 워커 수 (기본값: CPU 코어 수 - 1)
         easy_threshold: Easy/Hard 분류 임계값 (기본값: 0.5)
+        sample_size: 샘플링할 데이터 개수 (None이면 전체 사용)
+        set_size: 세트 크기 (Balanced Sampling용, 기본값: 8)
     """
     logger.info("\n" + "="*60)
     logger.info("=== Prompt Token Count 분포 분석 ===")
@@ -969,6 +1073,22 @@ def main(
         logger.error("Train 데이터 로드 실패")
         return
     
+    # Balanced Sampling 적용 (Train)
+    # sample_size가 지정되어 있으면 Balanced Sampling 대신 단순 샘플링 사용 (또는 둘 다 사용? 요구사항은 Balanced Sampling으로 대체하는 것 같음)
+    # 하지만 사용자가 "default 값으로 filtering하는게 아니라... 코드 수정해줘"라고 했으므로
+    # sample_size 로직은 유지하되, Balanced Sampling을 우선 적용하는 것이 좋음.
+    # 하지만 sample_size는 테스트 용도였으므로, Balanced Sampling을 메인으로 적용.
+    
+    if sample_size is not None:
+        # sample_size가 명시적으로 주어지면 단순 샘플링 (테스트용)
+        if len(train_df) > sample_size:
+            logger.info(f"Train 데이터 단순 샘플링 (테스트용): {len(train_df)} -> {sample_size}")
+            train_df = train_df.sample(n=sample_size, random_state=42)
+    else:
+        # sample_size가 없으면 Balanced Sampling 적용
+        verifier = MathVerifier(timeout=30)
+        train_df = apply_balanced_sampling(train_df, verifier, set_size)
+    
     # Validation 데이터는 선택적 (없을 수 있음)
     valid_df = None
     if validation_path and validation_path.strip():
@@ -977,6 +1097,11 @@ def main(
             logger.warning("⚠️ Validation 데이터 로드 실패 또는 파일이 없습니다. Validation 데이터 없이 진행합니다.")
             valid_df = None
         else:
+            # Validation에도 Balanced Sampling 적용? 보통 Train 분석이 목적이므로 Validation은 그대로 두거나 동일하게 적용.
+            # 여기서는 Train 분석이 주 목적이므로 Validation은 단순 로드 또는 sample_size만 적용
+            if sample_size is not None and len(valid_df) > sample_size:
+                logger.info(f"Validation 데이터 샘플링: {len(valid_df)} -> {sample_size}")
+                valid_df = valid_df.sample(n=sample_size, random_state=42)
             logger.info(f"✅ Validation 데이터 로드 완료: {len(valid_df)}개 인스턴스")
     else:
         logger.info("⚠️ Validation 경로가 제공되지 않았습니다. Train 데이터만 분석합니다.")
@@ -1312,13 +1437,13 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train/Validation 데이터의 Prompt Token Count 분포 분석")
-    parser.add_argument("--train-path", type=str, default="/mnt/data1/datasets/nlp/conf_agg/curated_10pct_baseline/train_curated.parquet",
+    parser.add_argument("--train-path", type=str, default="/mnt/data1/datasets/nlp/conf_agg/curated_4000_32_naive/train_curated.parquet",
                        help="Train 데이터 Parquet 파일 경로")
     parser.add_argument("--validation-path", type=str, default=None,
                        help="Validation 데이터 Parquet 파일 경로")
     parser.add_argument("--model-name", type=str, default="Qwen/Qwen3-1.7B",
                        help="모델 이름 또는 경로 (tokenizer 로드용)")
-    parser.add_argument("--output-dir", type=str, default="/mnt/data1/datasets/nlp/conf_agg/curated_10pct_baseline",
+    parser.add_argument("--output-dir", type=str, default="/mnt/data1/datasets/nlp/conf_agg/curated_4000_32_naive",
                        help="출력 디렉토리 (기본값: train 파일이 있는 디렉토리)")
     parser.add_argument("--max-input-length", type=int, default=16384,
                        help="최대 입력 길이 제한 (이 값을 넘는 인스턴스 제거, 예: 32768)")
@@ -1328,6 +1453,10 @@ if __name__ == "__main__":
                        help="멀티프로세싱 워커 수 (기본값: CPU 코어 수 - 1)")
     parser.add_argument("--easy-threshold", type=float, default=0.5,
                        help="Easy/Hard 분류 임계값 (기본값: 0.5, 정답률 >= threshold이면 Easy)")
+    parser.add_argument("--sample-size", type=int, default=None,
+                       help="샘플링할 데이터 개수 (기본값: None, 설정 시 Balanced Sampling 대신 단순 샘플링 사용)")
+    parser.add_argument("--set-size", type=int, default=8,
+                       help="세트 크기 (Balanced Sampling용, 기본값: 8)")
 
     args = parser.parse_args()
 
@@ -1339,6 +1468,8 @@ if __name__ == "__main__":
         max_input_length=args.max_input_length,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        easy_threshold=args.easy_threshold
+        easy_threshold=args.easy_threshold,
+        sample_size=args.sample_size,
+        set_size=args.set_size
     )
 

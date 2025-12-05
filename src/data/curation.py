@@ -62,7 +62,8 @@ class DataCurator:
         tokenizer_model: str = "Qwen/Qwen3-1.7B",
         easy_threshold: float = 0.5,
         order_strategy: str = "hard_first",
-        prompt_template: str = 
+        diverse_confidence_sampling: bool = False,
+        prompt_template: str =
             (
                 "You are an expert mathematician and critical analyst.\n"
                 "Your task is to synthesize multiple, potentially flawed, solution attempts "
@@ -101,6 +102,9 @@ class DataCurator:
                 - "hard_first": Hard 세트 먼저, Easy 세트 나중
                 - "easy_first": Easy 세트 먼저, Hard 세트 나중
                 - "shuffle": Hard와 Easy를 무작위로 섞기
+            diverse_confidence_sampling: confidence가 diverse하게 분포하도록 샘플링 (default: False)
+                - True: confidence를 정렬하고 구간별로 균등하게 샘플링 (stratified sampling)
+                - False: 기존 랜덤 샘플링 방식 사용
             prompt_template: 프롬프트 템플릿 문자열
         """
         self.strategy = strategy
@@ -113,6 +117,7 @@ class DataCurator:
         self.fill_insufficient_with_sampling = fill_insufficient_with_sampling
         self.easy_threshold = easy_threshold
         self.order_strategy = order_strategy
+        self.diverse_confidence_sampling = diverse_confidence_sampling
         self.prompt_template = prompt_template
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_model)
         # 시드 설정
@@ -120,6 +125,7 @@ class DataCurator:
         np.random.seed(42)
         logger.info(f"Enable Thinking: {self.enable_thinking}")
         logger.info(f"Order Strategy: {self.order_strategy}")
+        logger.info(f"Diverse Confidence Sampling: {self.diverse_confidence_sampling}")
     def classify_hard_easy_sets(
         self,
         sets: List[Dict[str, Any]],
@@ -287,9 +293,77 @@ class DataCurator:
         answer_counts = defaultdict(int)
         for answer in answers:
             answer_counts[answer] += 1
-        
+
         # 가장 많이 나온 답안 반환
         return max(answer_counts.items(), key=lambda x: x[1])[0]
+
+    def _select_diverse_by_confidence(
+        self,
+        responses: List[Dict[str, Any]],
+        num_samples: int,
+        problem_id: Any
+    ) -> List[Dict[str, Any]]:
+        """
+        Confidence 기반 diverse sampling을 수행합니다.
+
+        응답들을 confidence로 정렬하고, num_samples개 구간으로 나누어
+        각 구간에서 균등하게 샘플링하여 diverse한 confidence 분포를 보장합니다.
+
+        Args:
+            responses: 응답 리스트
+            num_samples: 선택할 샘플 수 (보통 set_size)
+            problem_id: 문제 ID (로깅용)
+
+        Returns:
+            Diverse하게 선택된 응답 리스트
+        """
+        # 응답에서 confidence 값 추출 및 정렬
+        responses_with_conf = []
+        for r in responses:
+            conf_val = r.get(self.confidence_key)
+            if conf_val is None:
+                conf_val = 0.0
+            responses_with_conf.append((conf_val, r))
+
+        # Confidence 기준으로 정렬 (오름차순)
+        responses_with_conf.sort(key=lambda x: x[0])
+
+        # Stratified sampling: num_samples개 구간으로 나누고 각 구간에서 1개씩 선택
+        selected_responses = []
+        n_responses = len(responses_with_conf)
+
+        if n_responses < num_samples:
+            # 응답이 필요한 수보다 적으면 중복 샘플링
+            if self.fill_insufficient_with_sampling:
+                # 있는 것을 모두 선택하고 부족한 만큼 랜덤으로 추가
+                selected_responses = [r for _, r in responses_with_conf]
+                while len(selected_responses) < num_samples:
+                    selected_responses.append(random.choice([r for _, r in responses_with_conf]))
+            else:
+                selected_responses = [r for _, r in responses_with_conf]
+        else:
+            # 구간 크기 계산
+            bucket_size = n_responses / num_samples
+
+            for i in range(num_samples):
+                # 각 구간의 시작과 끝 인덱스 계산
+                start_idx = int(i * bucket_size)
+                end_idx = int((i + 1) * bucket_size)
+
+                # 마지막 구간은 끝까지 포함
+                if i == num_samples - 1:
+                    end_idx = n_responses
+
+                # 구간이 비어있지 않은지 확인
+                if start_idx < end_idx:
+                    # 구간 내에서 무작위로 1개 선택
+                    selected_idx = random.randint(start_idx, end_idx - 1)
+                    selected_responses.append(responses_with_conf[selected_idx][1])
+                else:
+                    # 구간이 비어있으면 (이론상 발생하지 않아야 함) 마지막 응답 선택
+                    selected_responses.append(responses_with_conf[-1][1])
+
+        return selected_responses
     
     def create_response_sets(
         self, 
@@ -318,57 +392,81 @@ class DataCurator:
         
         for problem_id, group in problem_groups:
             responses = group.to_dict('records')
-            
+
             # 필요한 총 응답 수 계산
             required_responses = num_sets * self.set_size
-            
-            # shuffle_seed가 제공되면 해당 seed로 shuffle 및 샘플링
-            if shuffle_seed is not None:
-                # 문제별로 고유한 seed 생성 (problem_id와 shuffle_seed 조합)
-                problem_seed = hash(str(problem_id) + str(shuffle_seed)) % (2**31)
-                random.seed(problem_seed)
 
-                if len(responses) >= required_responses:
-                    # 충분한 응답이 있으면 중복 없이 샘플링
-                    selected_responses = random.sample(responses, required_responses)
-                else:
-                    # 응답이 부족한 경우
-                    if self.fill_insufficient_with_sampling:
-                        # 중복을 허용하여 필요한 개수만큼 채움
-                        selected_responses = random.choices(responses, k=required_responses)
-                        logger.info(
-                            f"문제 {problem_id}: 응답 {len(responses)}개에서 중복 샘플링으로 {required_responses}개 생성"
-                        )
-                    else:
-                        # 있는 만큼만 사용 (세트 수가 줄어듦)
-                        selected_responses = responses
-                        logger.warning(
-                            f"문제 {problem_id}: 응답 {len(responses)}개로는 세트 생성에 부족합니다. "
-                            f"필요: {required_responses}개, 세트 수가 {len(responses) // self.set_size}개로 제한됩니다."
-                        )
+            # Diverse confidence sampling을 사용하는 경우
+            if self.diverse_confidence_sampling:
+                # shuffle_seed가 제공되면 해당 seed 사용
+                if shuffle_seed is not None:
+                    problem_seed = hash(str(problem_id) + str(shuffle_seed)) % (2**31)
+                    random.seed(problem_seed)
+
+                # 각 세트마다 독립적으로 diverse sampling 수행
+                selected_responses = []
+                for set_idx in range(num_sets):
+                    # 각 세트마다 set_size개를 diverse하게 선택
+                    set_responses = self._select_diverse_by_confidence(
+                        responses,
+                        self.set_size,
+                        problem_id
+                    )
+                    selected_responses.extend(set_responses)
 
                 # 전역 seed 복원
-                random.seed(42)
+                if shuffle_seed is not None:
+                    random.seed(42)
+
             else:
-                # shuffle_seed가 없으면 기존 방식 사용
-                if len(responses) >= required_responses:
-                    # 충분한 응답이 있으면 중복 없이 샘플링
-                    selected_responses = random.sample(responses, required_responses)
-                else:
-                    # 응답이 부족한 경우
-                    if self.fill_insufficient_with_sampling:
-                        # 중복을 허용하여 필요한 개수만큼 채움
-                        selected_responses = random.choices(responses, k=required_responses)
-                        logger.info(
-                            f"문제 {problem_id}: 응답 {len(responses)}개에서 중복 샘플링으로 {required_responses}개 생성"
-                        )
+                # 기존 랜덤 샘플링 방식
+                # shuffle_seed가 제공되면 해당 seed로 shuffle 및 샘플링
+                if shuffle_seed is not None:
+                    # 문제별로 고유한 seed 생성 (problem_id와 shuffle_seed 조합)
+                    problem_seed = hash(str(problem_id) + str(shuffle_seed)) % (2**31)
+                    random.seed(problem_seed)
+
+                    if len(responses) >= required_responses:
+                        # 충분한 응답이 있으면 중복 없이 샘플링
+                        selected_responses = random.sample(responses, required_responses)
                     else:
-                        # 있는 만큼만 사용 (세트 수가 줄어듦)
-                        selected_responses = responses
-                        logger.warning(
-                            f"문제 {problem_id}: 응답 {len(responses)}개로는 세트 생성에 부족합니다. "
-                            f"필요: {required_responses}개, 세트 수가 {len(responses) // self.set_size}개로 제한됩니다."
-                        )
+                        # 응답이 부족한 경우
+                        if self.fill_insufficient_with_sampling:
+                            # 중복을 허용하여 필요한 개수만큼 채움
+                            selected_responses = random.choices(responses, k=required_responses)
+                            logger.info(
+                                f"문제 {problem_id}: 응답 {len(responses)}개에서 중복 샘플링으로 {required_responses}개 생성"
+                            )
+                        else:
+                            # 있는 만큼만 사용 (세트 수가 줄어듦)
+                            selected_responses = responses
+                            logger.warning(
+                                f"문제 {problem_id}: 응답 {len(responses)}개로는 세트 생성에 부족합니다. "
+                                f"필요: {required_responses}개, 세트 수가 {len(responses) // self.set_size}개로 제한됩니다."
+                            )
+
+                    # 전역 seed 복원
+                    random.seed(42)
+                else:
+                    # shuffle_seed가 없으면 기존 방식 사용
+                    if len(responses) >= required_responses:
+                        # 충분한 응답이 있으면 중복 없이 샘플링
+                        selected_responses = random.sample(responses, required_responses)
+                    else:
+                        # 응답이 부족한 경우
+                        if self.fill_insufficient_with_sampling:
+                            # 중복을 허용하여 필요한 개수만큼 채움
+                            selected_responses = random.choices(responses, k=required_responses)
+                            logger.info(
+                                f"문제 {problem_id}: 응답 {len(responses)}개에서 중복 샘플링으로 {required_responses}개 생성"
+                            )
+                        else:
+                            # 있는 만큼만 사용 (세트 수가 줄어듦)
+                            selected_responses = responses
+                            logger.warning(
+                                f"문제 {problem_id}: 응답 {len(responses)}개로는 세트 생성에 부족합니다. "
+                                f"필요: {required_responses}개, 세트 수가 {len(responses) // self.set_size}개로 제한됩니다."
+                            )
             
             # 응답을 세트 크기로 나누기
             actual_num_sets = len(selected_responses) // self.set_size

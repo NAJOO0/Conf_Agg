@@ -1437,13 +1437,13 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train/Validation 데이터의 Prompt Token Count 분포 분석")
-    parser.add_argument("--train-path", type=str, default="/mnt/data1/datasets/nlp/conf_agg/curated_4000_32_naive/train_curated.parquet",
+    parser.add_argument("--train-path", type=str, default="/mnt/data1/datasets/nlp/conf_agg/curated_4000_32_naive_diverse_confidence/train_curated.parquet",
                        help="Train 데이터 Parquet 파일 경로")
     parser.add_argument("--validation-path", type=str, default=None,
                        help="Validation 데이터 Parquet 파일 경로")
     parser.add_argument("--model-name", type=str, default="Qwen/Qwen3-1.7B",
                        help="모델 이름 또는 경로 (tokenizer 로드용)")
-    parser.add_argument("--output-dir", type=str, default="/mnt/data1/datasets/nlp/conf_agg/curated_4000_32_naive",
+    parser.add_argument("--output-dir", type=str, default="/mnt/data1/datasets/nlp/conf_agg/curated_4000_32_naive_diverse_confidence",
                        help="출력 디렉토리 (기본값: train 파일이 있는 디렉토리)")
     parser.add_argument("--max-input-length", type=int, default=16384,
                        help="최대 입력 길이 제한 (이 값을 넘는 인스턴스 제거, 예: 32768)")

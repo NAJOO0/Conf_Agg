@@ -12,11 +12,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # GPU 설정 (인자가 없으면 기본값 0,1 사용)
-GPU_IDS=${1:-"1"}
+GPU_IDS=${1:-"0"}
 NUM_GPUS=$(echo $GPU_IDS | tr ',' '\n' | wc -l)
 
 # WandB 이름 설정 (두 번째 인자, 선택사항)
-WANDB_NAME=${2:-"4000_32_naive_uniform"}
+WANDB_NAME=${2:-"4000_32_naive_diverse_confidence"}
 
 # 기본 로그 디렉토리
 LOG_DIR="${LOG_DIR:-logs}"

@@ -19,6 +19,8 @@ import logging
 import json
 from collections import defaultdict
 import numpy as np
+from transformers import AutoTokenizer
+from typing import Optional, Tuple
 
 # 프로젝트 루트를 Python 경로에 추가
 sys.path.append(str(Path(__file__).parent.parent))
@@ -54,19 +56,23 @@ def create_sampled_sets(solutions: list, k: int, num_sets: int, seed: int = 42) 
     return sampled_sets
 
 
-def create_sequential_sets(num_solutions: int, set_size: int = 8) -> list:
+def create_sequential_sets(num_solutions: int, set_size: int = 8, max_groups: int = None) -> list:
     """
     순차 분할 셋 생성 (Majority/Confidence Voting용)
     
     Args:
         num_solutions: 전체 solution 개수
         set_size: 각 셋의 크기 (기본 8)
+        max_groups: 최대 그룹 수 (None이면 제한 없음)
     
     Returns:
         순차 분할된 셋들의 리스트
         예: 128개 → [[0,1,2,3,4,5,6,7], [8,9,...,15], ..., [120,...,127]]
     """
     num_sets = num_solutions // set_size
+    if max_groups is not None:
+        num_sets = min(num_sets, max_groups)
+    
     sequential_sets = []
     
     for i in range(num_sets):
@@ -77,13 +83,14 @@ def create_sequential_sets(num_solutions: int, set_size: int = 8) -> list:
     return sequential_sets
 
 
-def create_sequential_sets_for_sizes(num_solutions: int, set_sizes: list) -> dict:
+def create_sequential_sets_for_sizes(num_solutions: int, set_sizes: list, max_groups: int = None) -> dict:
     """
     다양한 set size에 대해 순차 분할 셋 생성
     
     Args:
         num_solutions: 전체 solution 개수
         set_sizes: 생성할 set size 리스트
+        max_groups: 최대 그룹 수 (None이면 제한 없음)
     
     Returns:
         set_size별 순차 셋 딕셔너리
@@ -92,10 +99,105 @@ def create_sequential_sets_for_sizes(num_solutions: int, set_sizes: list) -> dic
     for set_size in set_sizes:
         if num_solutions < set_size:
             continue
-        sequential_sets = create_sequential_sets(num_solutions, set_size)
+        sequential_sets = create_sequential_sets(num_solutions, set_size, max_groups=max_groups)
         if sequential_sets:
             sequential_sets_dict[set_size] = sequential_sets
     return sequential_sets_dict
+
+
+def format_solutions_for_aggregation(solutions: list, include_confidence: bool = True) -> str:
+    """Aggregation 프롬프트를 위한 solution 텍스트 생성"""
+    lines = []
+    for idx, sol in enumerate(solutions, start=1):
+        solution_content = sol.get("content", "")
+        lines.append(
+            f"solution{idx}:\n"
+            f"{solution_content}\n"
+            f"final_answer: {sol.get('final_answer', '')}\n"
+        )
+        if include_confidence:
+            conf_value = sol.get("confidence_scores", {}).get("bottom_10_percent_confidence", None)
+            conf_str = f"{conf_value:.4f}" if conf_value is not None else "N/A"
+            lines[-1] += f"confidence: {conf_str}\n"
+    return "\n".join(lines)
+
+
+def filter_groups_by_token_length(
+    solution_groups: list,
+    solutions: list,
+    tokenizer: AutoTokenizer,
+    aggregation_prompt_template: str,
+    problem_text: str,
+    max_tokens: int,
+    enable_thinking: bool,
+    include_confidence: bool = True,
+    set_size: int = None
+) -> Tuple[list, int]:
+    """
+    Group 단위로 aggregation prompt 토큰 수를 체크하여 필터링
+    
+    Args:
+        solution_groups: solution group 리스트 (각 그룹은 인덱스 리스트)
+        solutions: 전체 solution 리스트
+        tokenizer: 토크나이저
+        aggregation_prompt_template: aggregation prompt 템플릿
+        problem_text: 문제 텍스트
+        max_tokens: 최대 토큰 수 (기본값, set_size에 따라 조정됨)
+        enable_thinking: thinking 활성화 여부
+        include_confidence: confidence 포함 여부
+        set_size: 그룹 크기 (16 이하: max_tokens 그대로, 32: 2배, 64: 4배)
+    
+    Returns:
+        (필터링된 group 리스트, 필터링된 group 수)
+    """
+    # set_size에 따라 max_tokens 조정
+    if set_size is not None:
+        if set_size <= 16:
+            adjusted_max_tokens = max_tokens
+        elif set_size == 32:
+            adjusted_max_tokens = max_tokens * 2
+        elif set_size == 64:
+            adjusted_max_tokens = max_tokens * 4
+        else:
+            adjusted_max_tokens = max_tokens
+    else:
+        adjusted_max_tokens = max_tokens
+    
+    filtered_groups = []
+    filtered_count = 0
+    
+    for group_indices in solution_groups:
+        # 인덱스 리스트를 실제 solution 객체 리스트로 변환
+        group_solutions = [solutions[idx] for idx in group_indices]
+        
+        # aggregation prompt 생성
+        solutions_text = format_solutions_for_aggregation(group_solutions, include_confidence=include_confidence)
+        prompt = aggregation_prompt_template.format(
+            problem=problem_text,
+            solutions=solutions_text
+        )
+        messages = [{"role": "user", "content": prompt}]
+        formatted_prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=enable_thinking,
+        )
+        
+        # 토큰 수 체크
+        tokens = tokenizer.encode(formatted_prompt, add_special_tokens=True)
+        token_count = len(tokens)
+        
+        if token_count <= adjusted_max_tokens:
+            filtered_groups.append(group_indices)
+        else:
+            filtered_count += 1
+            logger.debug(
+                f"Group 필터링됨: {token_count} 토큰 (최대: {adjusted_max_tokens}, "
+                f"set_size={set_size}, 기본 max_tokens={max_tokens})"
+            )
+    
+    return filtered_groups, filtered_count
 
 
 def get_set_configurations(num_solutions: int) -> dict:
@@ -185,7 +287,7 @@ def majority_voting_sequential(
     Args:
         solutions: 전체 solution 리스트
         ground_truth: 정답
-        sequential_sets: 순차 분할된 셋들
+        sequential_sets: 순차 분할된 셋들 (필터링 후)
         math_verifier: Math verifier
     
     Returns:
@@ -214,11 +316,14 @@ def majority_voting_sequential(
                 if math_verifier.verify_answer(majority_answer, ground_truth):
                     correct_count += 1
         
+        # 필터링 후 남은 그룹 수를 분모로 사용 (stage4_3과 동일)
         num_sets = len(sequential_sets)
+        accuracy = correct_count / num_sets if num_sets > 0 else 0.0
+        
         results[set_size] = {
             "correct_count": correct_count,
             "total_sets": num_sets,
-            "accuracy": correct_count / num_sets if num_sets > 0 else 0.0
+            "accuracy": accuracy
         }
     
     return results
@@ -237,7 +342,7 @@ def confidence_weighted_voting_sequential(
     Args:
         solutions: 전체 solution 리스트
         ground_truth: 정답
-        sequential_sets: 순차 분할된 셋들
+        sequential_sets: 순차 분할된 셋들 (필터링 후)
         confidence_metric: 사용할 confidence 메트릭
         math_verifier: Math verifier
     
@@ -263,11 +368,14 @@ def confidence_weighted_voting_sequential(
                 if math_verifier.verify_answer(best_answer, ground_truth):
                     correct_count += 1
         
+        # 필터링 후 남은 그룹 수를 분모로 사용 (stage4_3과 동일)
         num_sets = len(sequential_sets)
+        accuracy = correct_count / num_sets if num_sets > 0 else 0.0
+        
         results[set_size] = {
             "correct_count": correct_count,
             "total_sets": num_sets,
-            "accuracy": correct_count / num_sets if num_sets > 0 else 0.0
+            "accuracy": accuracy
         }
     
     return results
@@ -277,14 +385,34 @@ def evaluate_solutions(
     solutions: list,
     ground_truth: str,
     math_verifier: MathVerifier,
-    seed: int = 42
+    seed: int = 42,
+    max_groups: int = 32,
+    problem_text: Optional[str] = None,
+    tokenizer: Optional[AutoTokenizer] = None,
+    aggregation_prompt_template: Optional[str] = None,
+    max_tokens: Optional[int] = None,
+    enable_thinking: bool = False,
+    include_confidence: bool = True
 ) -> dict:
     """
     Solution 리스트에 대해 모든 메트릭 계산
     
     평가 방식:
     1. Pass@k: 샘플링 기반 (겹침 허용)
-    2. Majority/Confidence Voting: 순차 분할 (겹침 없음, 16개 셋)
+    2. Majority/Confidence Voting: 순차 분할 (겹침 없음, max_groups 제한, 토큰 필터링)
+    
+    Args:
+        solutions: 전체 solution 리스트
+        ground_truth: 정답
+        math_verifier: Math verifier
+        seed: 랜덤 시드
+        max_groups: 각 set_size별 최대 그룹 수 (기본 32, stage4_3과 동일)
+        problem_text: 문제 텍스트 (토큰 필터링용, None이면 필터링 안 함)
+        tokenizer: 토크나이저 (토큰 필터링용, None이면 필터링 안 함)
+        aggregation_prompt_template: aggregation prompt 템플릿 (토큰 필터링용)
+        max_tokens: 최대 토큰 수 (토큰 필터링용)
+        enable_thinking: thinking 활성화 여부 (토큰 필터링용)
+        include_confidence: confidence 포함 여부 (토큰 필터링용)
     """
     results = {}
     num_solutions = len(solutions)
@@ -306,14 +434,74 @@ def evaluate_solutions(
     results["pass_at_k"] = pass_at_k
     
     # 3. Majority/Confidence Voting용 순차 분할 셋 생성 (4,8,16,32,64)
+    # stage4_3과 동일하게 max_groups=32 제한 적용
     set_sizes = [4, 8, 16, 32, 64]
-    sequential_sets_dict = create_sequential_sets_for_sizes(num_solutions, set_sizes)
+    sequential_sets_dict = create_sequential_sets_for_sizes(num_solutions, set_sizes, max_groups=max_groups)
+    
+    # 토큰 필터링 적용 (모든 파라미터가 제공된 경우에만)
+    if (problem_text is not None and tokenizer is not None and 
+        aggregation_prompt_template is not None and max_tokens is not None):
+        logger.debug("토큰 필터링 적용 중...")
+        filtered_sequential_sets_dict = {}
+        total_filtered = 0
+        
+        for set_size, sequential_sets in sequential_sets_dict.items():
+            # set_size에 따라 max_tokens 조정
+            if set_size <= 16:
+                adjusted_max_tokens = max_tokens
+            elif set_size == 32:
+                adjusted_max_tokens = max_tokens * 2
+            elif set_size == 64:
+                adjusted_max_tokens = max_tokens * 4
+            else:
+                adjusted_max_tokens = max_tokens
+            
+            filtered_groups, filtered_count = filter_groups_by_token_length(
+                sequential_sets,
+                solutions,
+                tokenizer,
+                aggregation_prompt_template,
+                problem_text,
+                max_tokens,
+                enable_thinking,
+                include_confidence=include_confidence,
+                set_size=set_size
+            )
+            filtered_sequential_sets_dict[set_size] = filtered_groups
+            total_filtered += filtered_count
+            
+            # 필터링 통계 로깅 (INFO 레벨로 변경하여 더 눈에 띄게)
+            logger.info(
+                "Set size %d: %d개 그룹 중 %d개 필터링됨 (남은 그룹: %d, 필터링율: %.1f%%, "
+                "적용된 max_tokens: %d%s)",
+                set_size, len(sequential_sets), filtered_count, len(filtered_groups),
+                (filtered_count / len(sequential_sets) * 100) if len(sequential_sets) > 0 else 0.0,
+                adjusted_max_tokens,
+                f" (기본값 {max_tokens}의 {adjusted_max_tokens // max_tokens}배)" if adjusted_max_tokens != max_tokens else ""
+            )
+            
+            # 필터링 후 그룹이 없으면 경고
+            if len(filtered_groups) == 0 and len(sequential_sets) > 0:
+                logger.warning(
+                    "⚠️  Set size %d: 모든 그룹이 토큰 제한(%d)으로 인해 필터링되어 평가할 수 없습니다. "
+                    "정확도는 0.0으로 설정됩니다.",
+                    set_size, adjusted_max_tokens
+                )
+        
+        sequential_sets_dict = filtered_sequential_sets_dict
+        if total_filtered > 0:
+            logger.info(f"총 {total_filtered}개 그룹이 토큰 제한({max_tokens})으로 인해 필터링됨")
+    else:
+        logger.debug("토큰 필터링 파라미터가 제공되지 않아 필터링 건너뜀")
+    
     logger.debug(
-        "Majority/Confidence Voting 순차 셋 구성: %s",
+        "Majority/Confidence Voting 순차 셋 구성 (max_groups=%d): %s",
+        max_groups,
         {size: len(sets) for size, sets in sequential_sets_dict.items()}
     )
     
     # 4. Majority Voting (순차 분할 셋 사용)
+    # 필터링 후 남은 그룹 수를 분모로 사용 (stage4_3과 동일)
     majority_result = majority_voting_sequential(
         solutions, ground_truth, sequential_sets_dict, math_verifier
     )
@@ -357,9 +545,10 @@ def main(cfg: DictConfig) -> None:
     logger.info("   - Pass@k: 샘플링 기반 (겹침 허용)")
     logger.info("     * 128개: Pass@1~8(64셋), Pass@16(32셋), Pass@32(16셋)")
     logger.info("     * 64개: Pass@1~8(32셋), Pass@16(16셋), Pass@32(8셋)")
-    logger.info("   - Majority/Confidence Voting: 순차 분할 (겹침 없음)")
-    logger.info("     * 128개 → 16개 셋 (각 8개)")
-    logger.info("     * 64개 → 8개 셋 (각 8개)")
+    logger.info("   - Majority/Confidence Voting: 순차 분할 (겹침 없음, max_groups=32 제한)")
+    logger.info("     * stage4_3과 동일한 solution group 사용")
+    logger.info("     * 각 set_size별로 최대 32개 그룹만 평가")
+    logger.info("     * 토큰 필터링 적용 (filter_max_tokens 설정 시)")
     
     # 디렉토리 설정
     results_dir = cfg.evaluation.benchmarks.evaluation.results_dir
@@ -370,6 +559,38 @@ def main(cfg: DictConfig) -> None:
     math_verifier = MathVerifier(
         timeout=cfg.evaluation.benchmarks.evaluation.timeout
     )
+    
+    # 토큰 필터링 설정 (stage4_3과 동일하게)
+    eval_config = cfg.evaluation.benchmarks.evaluation
+    enable_thinking = eval_config.get("enable_thinking", False)
+    filter_max_tokens = eval_config.get("filter_max_tokens", None)
+    
+    # Tokenizer 초기화 (토큰 필터링용)
+    tokenizer = None
+    aggregation_prompt_template = None
+    
+    if filter_max_tokens is not None:
+        logger.info(f"토큰 필터링 활성화: max_tokens={filter_max_tokens}, enable_thinking={enable_thinking}")
+        tokenizer = AutoTokenizer.from_pretrained(
+            cfg.model.base_model,
+            trust_remote_code=True
+        )
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        
+        # Aggregation 프롬프트 템플릿 정의 (stage4_3과 동일)
+        aggregation_prompt_template = (
+            "Given the following problem:\n"
+            "{problem}\n"
+            "and these solution attempts with their confidence scores:\n"
+            "{solutions}\n"
+            "It is possible that any, all, or none of these solutions are correct or complete. "
+            "Carefully review the provided solutions, using them as starting points—correcting mistakes, "
+            "filling in gaps, and/or combining useful ideas—to produce a final, comprehensive, "
+            "and correct solution to the problem."
+        )
+    else:
+        logger.info("토큰 필터링 비활성화 (filter_max_tokens가 설정되지 않음)")
     
     # 벤치마크 데이터셋 설정
     benchmark_datasets = [
@@ -412,10 +633,22 @@ def main(cfg: DictConfig) -> None:
             for idx, problem_data in enumerate(baseline_data["generated_solutions"]):
                 solutions = problem_data["solutions"]
                 ground_truth = problem_data["ground_truth"]
+                problem_text = problem_data.get("problem_text", "")
                 
                 # 각 문제마다 다른 시드 사용 (재현 가능성 유지)
+                # stage4_3과 동일하게 max_groups=32 제한 및 토큰 필터링 적용
                 problem_results = evaluate_solutions(
-                    solutions, ground_truth, math_verifier, seed=42 + idx
+                    solutions, 
+                    ground_truth, 
+                    math_verifier, 
+                    seed=42 + idx, 
+                    max_groups=32,
+                    problem_text=problem_text if filter_max_tokens else None,
+                    tokenizer=tokenizer,
+                    aggregation_prompt_template=aggregation_prompt_template,
+                    max_tokens=filter_max_tokens,
+                    enable_thinking=enable_thinking,
+                    include_confidence=True
                 )
                 
                 # Pass@k 메트릭 누적
@@ -476,10 +709,22 @@ def main(cfg: DictConfig) -> None:
             for idx, problem_data in enumerate(aggllm_data["generated_solutions"]):
                 solutions = problem_data["solutions"]
                 ground_truth = problem_data["ground_truth"]
+                problem_text = problem_data.get("problem_text", "")
                 
                 # 각 문제마다 다른 시드 사용
+                # stage4_3과 동일하게 max_groups=32 제한 및 토큰 필터링 적용
                 problem_results = evaluate_solutions(
-                    solutions, ground_truth, math_verifier, seed=42 + idx
+                    solutions, 
+                    ground_truth, 
+                    math_verifier, 
+                    seed=42 + idx, 
+                    max_groups=32,
+                    problem_text=problem_text if filter_max_tokens else None,
+                    tokenizer=tokenizer,
+                    aggregation_prompt_template=aggregation_prompt_template,
+                    max_tokens=filter_max_tokens,
+                    enable_thinking=enable_thinking,
+                    include_confidence=True
                 )
                 
                 # Pass@k 메트릭 누적

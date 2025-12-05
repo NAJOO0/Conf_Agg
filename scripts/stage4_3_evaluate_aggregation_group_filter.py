@@ -380,9 +380,8 @@ def main(cfg: DictConfig) -> None:
         "and these solution attempts with their confidence scores:\n"
         "{solutions}\n"
         "It is possible that any, all, or none of these solutions are correct or complete. "
-        "Carefully review the provided solutions, using them as starting points—correcting mistakes, "
-        "filling in gaps, and/or combining useful ideas—to produce a final, comprehensive, "
-        "and correct solution to the problem."
+        "Use the solutions and their confidence scores to identify incorrect reasoning, "
+        "find valid approaches, and combine them to derive the final correct answer."
     )
 
     aggregation_prompt_template_without_conf = (

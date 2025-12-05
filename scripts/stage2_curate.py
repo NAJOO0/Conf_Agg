@@ -63,7 +63,7 @@ def main(cfg: DictConfig) -> None:
             "and these solution attempts with their confidence scores:\n"
             "{solutions}\n"
             "It is possible that any, all, or none of these solutions are correct or complete. "
-            "Carefully review the provided solutions and their confidence scores, using them as starting points—correcting mistakes, "
+            "Carefully review the provided solutions with their confidence scores, using them as starting points—correcting mistakes, "
             "filling in gaps, and/or combining useful ideas--to produce a final, comprehensive, and correct solution to the problem."
         )
 
@@ -78,6 +78,7 @@ def main(cfg: DictConfig) -> None:
         confidence_key=getattr(cfg.data.curation, "confidence_key", "bottom_10_percent_confidence"),
         fill_insufficient_with_sampling=getattr(cfg.data.curation, "fill_insufficient_with_sampling", False),
         order_strategy=getattr(cfg.data.curation, "order_strategy", "hard_first"),
+        diverse_confidence_sampling=getattr(cfg.data.curation, "diverse_confidence_sampling", False),
         prompt_template=getattr(
             cfg.data.curation,
             "prompt_template",
@@ -85,7 +86,7 @@ def main(cfg: DictConfig) -> None:
         ),
     )
     
-    output_dir = os.path.join(cfg.paths.data_dir, f"curated_4000_32_{cfg.data.curation.strategy}")
+    output_dir = os.path.join(cfg.paths.data_dir, f"curated_4000_32_{cfg.data.curation.strategy}_diverse_confidence")
     result_paths = curator.curate_data(
         generated_data_path, 
         output_dir,

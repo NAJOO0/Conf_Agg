@@ -103,12 +103,12 @@ def plot_comparison(benchmark_name, dir1, dir2, output_dir, base_dir):
     # Plot Series 2 (w confidence) - now blue
     if series2:
         x2, y2 = zip(*series2)
-        plt.plot(x2, y2, marker='s', label='AggLLM (w confidence kl0 uniform)', color='blue')
+        plt.plot(x2, y2, marker='s', label='AggLLM (w\o confidence)', color='orange')
         
     # Plot Series 1 (w/o confidence) - now orange
     if series1:
         x1, y1 = zip(*series1)
-        plt.plot(x1, y1, marker='o', label='AggLLM (w confidence kl0)', color='orange')
+        plt.plot(x1, y1, marker='o', label='AggLLM (w confidence)', color='blue')
         
     # Plot Baselines
     if avg_base_conf is not None:
@@ -121,7 +121,7 @@ def plot_comparison(benchmark_name, dir1, dir2, output_dir, base_dir):
     # Format: key: (Label, Color, Linestyle)
     extra_metrics_config = {
         "pass_at_1": ("Pass@1", "purple", "-"),
-        "pass_at_8": ("Pass@8", "brown", "-"),
+        # "pass_at_8": ("Pass@8", "brown", "-"),
         "majority_voting_set_8": ("Maj@8", "navy", "-."),
         "confidence_bottom_10_percent_confidence_set_8": ("Conf Bottom 10% @8", "darkred", "-.")
     }
@@ -181,8 +181,8 @@ def plot_comparison(benchmark_name, dir1, dir2, output_dir, base_dir):
 
 def main():
     base_dir = "/root/projects/Conf_Agg/output_s/outputs/comprehensive_results/Qwen_Qwen3-1.7B_think_True_32768"
-    dir1_name = "3200_32_naive_kl0" #baseline yellow line
-    dir2_name = "4000_32_naive_uniform" #comparison blue line
+    dir1_name = "4000_32_naive_uniform" #baseline yellow line
+    dir2_name = "4000_32_baseline" #comparison blue line
     
     dir1 = os.path.join(base_dir, dir1_name)
     dir2 = os.path.join(base_dir, dir2_name)

@@ -1,12 +1,13 @@
 # @package data.curation
-strategy: "baseline"  # baseline, naive, curriculum, multitask 
+strategy: "naive"  # baseline, naive, curriculum, multitask
 enable_thinking: false # enable_thinking=True일 때 <think> 태그 사용, group_size=2048 사용
 easy_sample_percentage: 50
 num_sets_per_problem: 4
 set_size: 8
 fill_insufficient_with_sampling: true
 confidence_key: "bottom_10_percent_confidence"
-order_strategy: "easy_first"  # hard_first, easy_first, shuffle
+order_strategy: "shuffle"  # hard_first, easy_first, shuffle
+diverse_confidence_sampling: true  # confidence가 diverse하게 분포하도록 샘플링
 
 verification:
   library: "math_verify"

@@ -24,6 +24,7 @@ outputs/results/
 !outputs/results/.gitkeep
 output_s/
 outputs/
+experiments/
 
 # Python
 __pycache__/

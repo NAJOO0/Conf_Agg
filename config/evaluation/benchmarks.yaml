@@ -23,7 +23,7 @@ evaluation:
   enable_thinking: false  # enable_thinking=True일 때 <think> 태그 사용, group_size=2048 사용
   confidence_group_size: 2048  # enable_thinking=True일 때 사용할 group_size
   results_dir: "comprehensive_results/Qwen_Qwen3-1.7B_think_True_32768"
-  experiment_name: "4000_32_naive_uniform"
+  experiment_name: "4000_32_naive"
   checkpoint_interval: 100
   aggregation_do_analysis: false
   aggregation_do_generation: true
@@ -61,4 +61,3 @@ metrics:
 output:
   format: "json"
   save_predictions: true
-
